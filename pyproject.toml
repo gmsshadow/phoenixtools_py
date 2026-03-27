@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phoenixtools"
+version = "0.1.0"
+description = "Phoenixtools desktop app (Python rewrite)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.7",
+  "sqlmodel>=0.0.22",
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "platformdirs>=4.2",
+  "python-dateutil>=2.9",
+  "lxml>=5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pytest>=8.3",
+]
+packaging = [
+  "pyinstaller>=6.6",
+]
+
+[project.scripts]
+phoenixtools = "phoenixtools_app.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+

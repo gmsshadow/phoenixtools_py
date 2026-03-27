@@ -1,0 +1,2 @@
+[console_scripts]
+phoenixtools = phoenixtools_app.__main__:main

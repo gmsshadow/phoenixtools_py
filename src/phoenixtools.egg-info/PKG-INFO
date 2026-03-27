@@ -1,0 +1,52 @@
+Metadata-Version: 2.4
+Name: phoenixtools
+Version: 0.1.0
+Summary: Phoenixtools desktop app (Python rewrite)
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6>=6.7
+Requires-Dist: sqlmodel>=0.0.22
+Requires-Dist: httpx>=0.27
+Requires-Dist: pydantic>=2.6
+Requires-Dist: platformdirs>=4.2
+Requires-Dist: python-dateutil>=2.9
+Requires-Dist: lxml>=5.2
+Provides-Extra: dev
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.11; extra == "dev"
+Requires-Dist: pytest>=8.3; extra == "dev"
+Provides-Extra: packaging
+Requires-Dist: pyinstaller>=6.6; extra == "packaging"
+
+# Phoenixtools (Python Desktop Rewrite)
+
+Local-first desktop rewrite of the original Ruby/Rails Phoenixtools.
+
+## Status
+
+Work in progress. See `FEATURE_MAP.md` for parity targets.
+
+## Development setup
+
+```powershell
+cd phoenixtools_py
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+pip install -e .
+phoenixtools
+```
+
+## Using the app
+
+- **Home**: run “Daily refresh (market)” to import current market buys/sells.
+- **Configuration**: set `user_id` + `xml_code`, then run “setup import” to pull `info_data` + `pos_list`.
+- **Trade routes**: shows simple profit-ranked routes based on current market data.
+
+## Build a Windows executable
+
+```powershell
+cd phoenixtools_py
+.\packaging\build_windows.ps1
+```
+
