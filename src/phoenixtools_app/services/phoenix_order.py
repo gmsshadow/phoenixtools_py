@@ -54,6 +54,30 @@ class PhoenixOrder:
         return cls([2030, 0, starbase_id, item_id, quantity, cls._bool(private)])
 
     @classmethod
+    def market_buy(
+        cls,
+        item_id: int,
+        quantity: int,
+        price: float,
+        private: bool = False,
+        add: bool = False,
+        standing_order: int = 0,
+    ) -> "PhoenixOrder":
+        return cls([4060, standing_order, item_id, quantity, price, cls._bool(private), cls._bool(add)])
+
+    @classmethod
+    def market_sell(
+        cls,
+        item_id: int,
+        quantity: int,
+        price: float,
+        private: bool = False,
+        add: bool = False,
+        standing_order: int = 0,
+    ) -> "PhoenixOrder":
+        return cls([4070, standing_order, item_id, quantity, price, cls._bool(private), cls._bool(add)])
+
+    @classmethod
     def wait_for_tus(cls, tus: int = 300, exact: bool = False) -> "PhoenixOrder":
         return cls([2520, 0, tus, cls._bool(exact)])
 

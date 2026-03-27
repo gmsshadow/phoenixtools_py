@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +21,14 @@ from sqlmodel import Session, select
 
 from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.db.models import Base, BaseItem, CelestialBody, Item, ItemGroup, StarSystem
+from phoenixtools_app.services.base_reports import (
+    competitive_buy_orders_text,
+    competitive_buy_rows,
+    middleman_candidate_items,
+    middleman_orders_text,
+    raw_materials_for_base,
+    trade_items_for_base,
+)
 from phoenixtools_app.services.import_turn import run_turn_import
 from phoenixtools_app.services.shipping_jobs import group_summaries_for_base, squadron_move_group_orders
 
@@ -51,8 +61,11 @@ class BasesPage(QWidget):
         left_layout.addWidget(self.refresh_btn)
         left_layout.addWidget(self.table, 1)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        self.tabs = QTabWidget()
+
+        # --- Overview tab ---
+        overview = QWidget()
+        overview_layout = QVBoxLayout(overview)
 
         detail = QWidget()
         detail_layout = QFormLayout(detail)
@@ -100,16 +113,83 @@ class BasesPage(QWidget):
         detail_layout.addRow("", self.copy_id_btn)
         detail_layout.addRow("", self.fetch_turn_btn)
 
-        right_layout.addWidget(detail)
-        right_layout.addWidget(QLabel("<b>Inventory (from turn)</b>"))
-        right_layout.addWidget(self.inventory, 1)
-        right_layout.addWidget(QLabel("<b>Item groups (from turn)</b>"))
-        right_layout.addWidget(self.groups, 1)
-        right_layout.addWidget(QLabel("<b>Item group shipping</b>"))
-        right_layout.addWidget(shipping)
+        overview_layout.addWidget(detail)
+        overview_layout.addWidget(QLabel("<b>Inventory report</b> <small>(category: Inventory)</small>"))
+        overview_layout.addWidget(self.inventory, 1)
+        overview_layout.addWidget(QLabel("<b>Item groups</b>"))
+        overview_layout.addWidget(self.groups, 1)
+        overview_layout.addWidget(QLabel("<b>Item group shipping</b>"))
+        overview_layout.addWidget(shipping)
+
+        self.tabs.addTab(overview, "Overview")
+
+        # --- Trade / raw tab (Rails: trade_items_report + raw materials) ---
+        trade_tab = QWidget()
+        trade_layout = QVBoxLayout(trade_tab)
+        trade_layout.addWidget(
+            QLabel(
+                "<b>Trade items</b> and <b>raw materials</b> from the last fetched turn "
+                "(Trade Item Report / Raw Material Report)."
+            )
+        )
+        self.trade_table = QTableWidget(0, 3)
+        self.trade_table.setHorizontalHeaderLabels(["Qty", "Item", "Item ID"])
+        self.trade_table.setAlternatingRowColors(True)
+        self.raw_table = QTableWidget(0, 3)
+        self.raw_table.setHorizontalHeaderLabels(["Qty", "Item", "Item ID"])
+        self.raw_table.setAlternatingRowColors(True)
+        trade_layout.addWidget(QLabel("<b>Trade Item Report</b>"))
+        trade_layout.addWidget(self.trade_table, 1)
+        trade_layout.addWidget(QLabel("<b>Raw Material Report</b>"))
+        trade_layout.addWidget(self.raw_table, 1)
+        self.tabs.addTab(trade_tab, "Trade / raw")
+
+        # --- Competitive buys tab ---
+        comp_tab = QWidget()
+        comp_layout = QVBoxLayout(comp_tab)
+        comp_layout.addWidget(
+            QLabel(
+                "<b>Competitive market buys</b> — approximate vs Rails "
+                "(full parity needs planetary market fields on the base + item classifications)."
+            )
+        )
+        self.comp_table = QTableWidget(0, 8)
+        self.comp_table.setHorizontalHeaderLabels(
+            ["Item", "Rec. buy", "Volume", "Profit", "Best sell @", "Best buy @", "Sell base", "Buy base"]
+        )
+        self.comp_copy_btn = QPushButton("Copy competitive buy orders")
+        self._comp_text = ""
+        comp_layout.addWidget(self.comp_table, 1)
+        comp_layout.addWidget(self.comp_copy_btn)
+        self.tabs.addTab(comp_tab, "Competitive buys")
+
+        # --- Middleman tab ---
+        mid_tab = QWidget()
+        mid_layout = QVBoxLayout(mid_tab)
+        mid_layout.addWidget(
+            QLabel(
+                "<b>Middleman</b> — market buy/sell pair from latest market snapshot "
+                "(Rails formulas; item must pass spread / price thresholds)."
+            )
+        )
+        mid_form = QFormLayout()
+        mid_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.mid_item = QComboBox()
+        self.mid_gen_btn = QPushButton("Generate middleman orders")
+        self.mid_copy_btn = QPushButton("Copy middleman orders")
+        self.mid_orders = QTextEdit()
+        self.mid_orders.setReadOnly(True)
+        self.mid_orders.setPlaceholderText("Order=… lines appear here.")
+        self._mid_full_text = ""
+        mid_form.addRow("Item", self.mid_item)
+        mid_form.addRow("", self.mid_gen_btn)
+        mid_form.addRow("", self.mid_copy_btn)
+        mid_layout.addLayout(mid_form)
+        mid_layout.addWidget(self.mid_orders, 1)
+        self.tabs.addTab(mid_tab, "Middleman")
 
         root.addWidget(left, 3)
-        root.addWidget(right, 2)
+        root.addWidget(self.tabs, 2)
 
         self.refresh_btn.clicked.connect(self._refresh)
         self.filter.textChanged.connect(self._apply_filter)
@@ -118,8 +198,17 @@ class BasesPage(QWidget):
         self.fetch_turn_btn.clicked.connect(self._fetch_turn)
         self.ship_generate_btn.clicked.connect(self._generate_shipping_orders)
         self.ship_copy_btn.clicked.connect(self._copy_shipping_orders)
+        self.comp_copy_btn.clicked.connect(self._copy_competitive_orders)
+        self.mid_gen_btn.clicked.connect(self._generate_middleman)
+        self.mid_copy_btn.clicked.connect(self._copy_middleman)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self._refresh()
+        self._refresh_middleman_items()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 3:
+            self._refresh_middleman_items()
 
     def _refresh(self) -> None:
         with make_session(self._engine) as session:
@@ -158,7 +247,6 @@ class BasesPage(QWidget):
         if not rows:
             return None
         row = min(rows)
-        # We can't reliably map back to the original list after filtering, so rebuild from the table ID.
         base_id_item = self.table.item(row, 0)
         if base_id_item is None:
             return None
@@ -180,6 +268,7 @@ class BasesPage(QWidget):
             self.base_name.setText("—")
             self.location.setText("—")
             self.facilities.setText("—")
+            self._clear_report_tables()
             return
 
         b, ss, cb = row
@@ -198,8 +287,17 @@ class BasesPage(QWidget):
                 ]
             )
         )
-        self._load_turn_data(int(b.id))
-        self._refresh_shipping_controls(int(b.id))
+        bid = int(b.id)
+        self._load_turn_data(bid)
+        self._load_trade_raw_tables(bid)
+        self._load_competitive_table(bid)
+        self._refresh_shipping_controls(bid)
+
+    def _clear_report_tables(self) -> None:
+        self.trade_table.setRowCount(0)
+        self.raw_table.setRowCount(0)
+        self.comp_table.setRowCount(0)
+        self._comp_text = ""
 
     def _copy_id(self) -> None:
         row = self._selected_row()
@@ -225,7 +323,9 @@ class BasesPage(QWidget):
                 f"Imported base {result.base_id}: inventory={result.inventory_items}, "
                 f"item groups={result.item_groups} ({result.item_group_rows} rows).",
             )
-            self._load_turn_data(int(b.id))
+            bid = int(b.id)
+            self._load_turn_data(bid)
+            self._load_trade_raw_tables(bid)
         except Exception as e:
             QMessageBox.critical(self, "Turn import failed", str(e))
 
@@ -234,6 +334,7 @@ class BasesPage(QWidget):
             inv = session.exec(
                 select(BaseItem, Item)
                 .where(BaseItem.base_id == base_id)
+                .where(BaseItem.category == "Inventory")
                 .where(BaseItem.item_id == Item.id)
                 .order_by(BaseItem.quantity.desc())
             ).all()
@@ -256,6 +357,76 @@ class BasesPage(QWidget):
             self.groups.setItem(r, 1, _cell(ig.name))
             self.groups.setItem(r, 2, _cell(item.name))
             self.groups.setItem(r, 3, _cell(str(ig.quantity), align=Qt.AlignmentFlag.AlignRight))
+
+    def _load_trade_raw_tables(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            trade = trade_items_for_base(session, base_id)
+            raw = raw_materials_for_base(session, base_id)
+
+        self.trade_table.setRowCount(len(trade))
+        for r, (bi, item) in enumerate(trade):
+            self.trade_table.setItem(r, 0, _cell(str(bi.quantity), align=Qt.AlignmentFlag.AlignRight))
+            self.trade_table.setItem(r, 1, _cell(item.name))
+            self.trade_table.setItem(r, 2, _cell(str(item.id), align=Qt.AlignmentFlag.AlignRight))
+
+        self.raw_table.setRowCount(len(raw))
+        for r, (bi, item) in enumerate(raw):
+            self.raw_table.setItem(r, 0, _cell(str(bi.quantity), align=Qt.AlignmentFlag.AlignRight))
+            self.raw_table.setItem(r, 1, _cell(item.name))
+            self.raw_table.setItem(r, 2, _cell(str(item.id), align=Qt.AlignmentFlag.AlignRight))
+
+    def _load_competitive_table(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            rows = competitive_buy_rows(session, base_id)
+            names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
+            self._comp_text = competitive_buy_orders_text(session, base_id)
+
+        self.comp_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            self.comp_table.setItem(r, 0, _cell(row.item_name))
+            self.comp_table.setItem(r, 1, _cell(f"{row.recommended_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
+            self.comp_table.setItem(r, 2, _cell(str(row.recommended_buy_volume), align=Qt.AlignmentFlag.AlignRight))
+            self.comp_table.setItem(r, 3, _cell(f"{row.profit:.2f}", align=Qt.AlignmentFlag.AlignRight))
+            self.comp_table.setItem(r, 4, _cell(f"{row.best_sell_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
+            self.comp_table.setItem(r, 5, _cell(f"{row.best_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
+            self.comp_table.setItem(r, 6, _cell(names.get(row.best_sell_base_id, str(row.best_sell_base_id))))
+            self.comp_table.setItem(r, 7, _cell(names.get(int(row.best_buy_base_id), str(row.best_buy_base_id))))
+
+    def _copy_competitive_orders(self) -> None:
+        if not self._comp_text.strip() or self._comp_text.startswith("; No competitive"):
+            QMessageBox.information(self, "Nothing to copy", "No competitive orders to copy (run market refresh + select a base).")
+            return
+        QApplication.clipboard().setText(self._comp_text)
+        QMessageBox.information(self, "Copied", "Competitive buy orders copied to clipboard.")
+
+    def _refresh_middleman_items(self) -> None:
+        self.mid_item.clear()
+        with make_session(self._engine) as session:
+            items = middleman_candidate_items(session)
+        for iid, label in items:
+            self.mid_item.addItem(label, int(iid))
+        if self.mid_item.count() == 0:
+            self.mid_item.addItem("(No middleman candidates — refresh market)", None)
+
+    def _generate_middleman(self) -> None:
+        data = self.mid_item.currentData()
+        if data is None:
+            QMessageBox.information(self, "No item", "Select an item.")
+            return
+        try:
+            with make_session(self._engine) as session:
+                text = middleman_orders_text(session, int(data))
+            self._mid_full_text = text
+            self.mid_orders.setPlainText(text)
+        except Exception as e:
+            QMessageBox.critical(self, "Middleman failed", str(e))
+
+    def _copy_middleman(self) -> None:
+        if not self._mid_full_text.strip():
+            QMessageBox.information(self, "Nothing to copy", "Generate middleman orders first.")
+            return
+        QApplication.clipboard().setText(self._mid_full_text)
+        QMessageBox.information(self, "Copied", "Middleman orders copied to clipboard.")
 
     def _refresh_shipping_controls(self, source_base_id: int) -> None:
         self.ship_group.clear()
@@ -343,4 +514,3 @@ def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetIt
         item.setTextAlignment(int(align))
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
     return item
-

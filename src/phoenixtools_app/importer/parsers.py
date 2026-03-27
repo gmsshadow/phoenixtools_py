@@ -235,6 +235,8 @@ def parse_system_cbodies_html(html_text: str) -> SystemCbodiesData:
 @dataclass(frozen=True)
 class TurnData:
     inventory: dict[int, int]
+    trade_items: dict[int, int]
+    raw_materials: dict[int, int]
     item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
 
 
@@ -280,6 +282,7 @@ def parse_turn_html(html_text: str) -> TurnData:
     """
     Partial port of Rails `NexusTurn`:
     - Parses "Inventory Report" into item_id -> quantity
+    - Parses "Trade Item Report" / "Raw Material Report" (Rails BaseItem categories)
     - Parses "Item Group: NAME (ID)" sections into grouped items
     """
     html_text = _unwrap_possible_xml_to_html(html_text)
@@ -334,18 +337,23 @@ def parse_turn_html(html_text: str) -> TurnData:
         except ValueError:
             return None
 
-    inventory: dict[int, int] = {}
-    inv_table = find_section_table("Inventory Report")
-    inv_rows = parse_table_rows(inv_table)
-    for row in inv_rows[1:]:
-        if len(row) < 2:
-            continue
-        qty = _parse_int(row[0])
-        parsed = parse_item_str(row[1])
-        if qty is None or parsed is None:
-            continue
-        item_id, _name = parsed
-        inventory[item_id] = inventory.get(item_id, 0) + int(qty)
+    def parse_qty_name_table(heading: str) -> dict[int, int]:
+        out: dict[int, int] = {}
+        tbl = find_section_table(heading)
+        for row in parse_table_rows(tbl)[1:]:
+            if len(row) < 2:
+                continue
+            qty = _parse_int(row[0])
+            parsed = parse_item_str(row[1])
+            if qty is None or parsed is None:
+                continue
+            item_id, _name = parsed
+            out[item_id] = out.get(item_id, 0) + int(qty)
+        return out
+
+    inventory = parse_qty_name_table("Inventory Report")
+    trade_items = parse_qty_name_table("Trade Item Report")
+    raw_materials = parse_qty_name_table("Raw Material Report")
 
     item_groups: dict[int, dict[str, object]] = {}
     for n in doc.xpath('//td[contains(@class,"report_left")]'):
@@ -387,7 +395,12 @@ def parse_turn_html(html_text: str) -> TurnData:
             items[item_id] = items.get(item_id, 0) + int(qty)
         item_groups[group_id] = {"name": name, "items": items}
 
-    return TurnData(inventory=inventory, item_groups=item_groups)
+    return TurnData(
+        inventory=inventory,
+        trade_items=trade_items,
+        raw_materials=raw_materials,
+        item_groups=item_groups,
+    )
 
 
 def _parse_int(s: str | None) -> int | None:

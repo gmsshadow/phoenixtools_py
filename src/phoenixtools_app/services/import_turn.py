@@ -66,15 +66,21 @@ def run_turn_import(session: Session, base_id: int, *, progress: ProgressCb | No
     session.exec(delete(ItemGroup).where(ItemGroup.base_id == int(base.id)))
     session.commit()
 
-    inv_count = 0
-    for item_id, qty in parsed.inventory.items():
-        item = session.get(Item, int(item_id))
-        if item is None:
-            item = Item(id=int(item_id), name=f"Item {item_id}")
-            session.add(item)
-            session.commit()
-        session.add(BaseItem(base_id=int(base.id), item_id=int(item_id), quantity=int(qty), category="Inventory"))
-        inv_count += 1
+    def _add_base_items(qty_map: dict[int, int], category: str) -> int:
+        n = 0
+        for item_id, qty in qty_map.items():
+            item = session.get(Item, int(item_id))
+            if item is None:
+                item = Item(id=int(item_id), name=f"Item {item_id}")
+                session.add(item)
+                session.commit()
+            session.add(BaseItem(base_id=int(base.id), item_id=int(item_id), quantity=int(qty), category=category))
+            n += 1
+        return n
+
+    inv_count = _add_base_items(parsed.inventory, "Inventory")
+    _add_base_items(parsed.trade_items, "Trade Items")
+    _add_base_items(parsed.raw_materials, "Raw Materials")
 
     group_count = 0
     group_rows = 0
