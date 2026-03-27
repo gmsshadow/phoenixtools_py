@@ -107,7 +107,7 @@ class HomePage(QWidget):
         self.status.setTextFormat(Qt.TextFormat.RichText)
 
         self.daily_btn = QPushButton("Run daily refresh (market)")
-        self.full_btn = QPushButton("Run full refresh (todo)")
+        self.full_btn = QPushButton("Run full refresh")
 
         left_layout.addRow("Status", self.status)
         left_layout.addRow("", self.daily_btn)
