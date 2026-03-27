@@ -74,30 +74,51 @@ class NexusHtmlClient:
         from lxml import html as lxml_html
 
         doc = lxml_html.fromstring(list_html.text)
-        for td in doc.xpath('//td[contains(@class,"turns_tab_off")]'):
-            a = td.xpath(".//a")
-            if not a:
-                continue
-            anchor = a[0]
-            text = (anchor.text_content() or "").strip()
-            if f"({base_id})" not in text:
-                continue
-            onclick = (anchor.get("onclick") or "").strip()
+
+        # Be forgiving: Rails looks under `td.turns_tab_off`, but Nexus markup varies.
+        # Search all anchors for one that includes "(<id>)".
+        anchors = doc.xpath("//a")
+        target = None
+        for a in anchors:
+            text = (a.text_content() or "").strip()
+            if f"({base_id})" in text:
+                target = a
+                break
+
+        if target is None:
+            raise RuntimeError(
+                f"Turn report for base {base_id} not found. "
+                "The turns list page did not contain a link with that '(id)'. "
+                "This can happen if the base isn't visible to the logged-in user yet."
+            )
+
+        onclick = (target.get("onclick") or "").strip()
+        href = (target.get("href") or "").strip()
+
+        url_path = ""
+        if "/index.php" in onclick:
             # Example: window.open('/index.php?a=...','_blank',...)
             start = onclick.find("/index.php")
-            if start < 0:
-                continue
-            end = onclick.find('"', start)
-            if end < 0:
-                end = onclick.find("'", start)
-            if end < 0:
-                end = len(onclick)
+            # end at next quote/parens/comma
+            end_candidates = [onclick.find('"', start), onclick.find("'", start), onclick.find(")", start), onclick.find(",", start)]
+            end_candidates = [e for e in end_candidates if e != -1]
+            end = min(end_candidates) if end_candidates else len(onclick)
             url_path = onclick[start:end]
-            if not url_path.startswith("/"):
-                url_path = "/" + url_path
-            report = self._client.get(f"http://{NEXUS_DOMAIN}{url_path}")
-            report.raise_for_status()
-            return report.text
+        elif href.startswith("/index.php"):
+            url_path = href
+        elif href.startswith("index.php"):
+            url_path = "/" + href
 
-        raise RuntimeError(f"Turn report for base {base_id} not found (turns list did not contain it).")
+        if not url_path:
+            raise RuntimeError(
+                f"Turn report link for base {base_id} was found, but could not extract the popup URL "
+                "(missing onclick/href)."
+            )
+
+        if not url_path.startswith("/"):
+            url_path = "/" + url_path
+
+        report = self._client.get(f"http://{NEXUS_DOMAIN}{url_path}")
+        report.raise_for_status()
+        return report.text
 
