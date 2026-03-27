@@ -238,13 +238,58 @@ class TurnData:
     item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
 
 
+def _unwrap_possible_xml_to_html(payload: str) -> str:
+    """
+    Nexus `sa=turn_data&tid=...` sometimes returns a full HTML document, and sometimes
+    returns an XML wrapper containing the HTML as text/CDATA. This extracts the HTML
+    in a best-effort way.
+    """
+    s = payload.lstrip()
+    if not s.startswith("<?xml"):
+        return payload
+
+    # Parse XML as bytes (lxml disallows unicode with encoding declaration).
+    try:
+        root = etree.fromstring(payload.encode("utf-8", errors="ignore"))
+    except Exception:
+        return payload
+
+    # Prefer any text node that looks like HTML.
+    texts: list[str] = []
+    try:
+        for t in root.xpath("//text()"):
+            if t is None:
+                continue
+            tt = str(t)
+            if "<html" in tt.lower() or "<td" in tt.lower() or "<table" in tt.lower():
+                texts.append(tt)
+    except Exception:
+        texts = []
+
+    if texts:
+        return max(texts, key=len)
+
+    # Fallback to full string value.
+    try:
+        return str(root.xpath("string(.)"))
+    except Exception:
+        return payload
+
+
 def parse_turn_html(html_text: str) -> TurnData:
     """
     Partial port of Rails `NexusTurn`:
     - Parses "Inventory Report" into item_id -> quantity
     - Parses "Item Group: NAME (ID)" sections into grouped items
     """
-    doc = lxml_html.fromstring(html_text)
+    html_text = _unwrap_possible_xml_to_html(html_text)
+
+    # lxml does not allow unicode strings with an XML encoding declaration.
+    head = html_text.lstrip()[:200].lower()
+    if head.startswith("<?xml") and "encoding" in head:
+        doc = lxml_html.fromstring(html_text.encode("utf-8", errors="ignore"))
+    else:
+        doc = lxml_html.fromstring(html_text)
 
     def parse_table_rows(table_node) -> list[list[str]]:
         rows: list[list[str]] = []

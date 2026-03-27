@@ -24,10 +24,23 @@ class NexusXmlClient:
     def close(self) -> None:
         self._client.close()
 
-    def fetch(self, sa: str) -> str:
+    def fetch(self, sa: str, **extra_params: object) -> str:
         # Mirrors Ruby: "#{XML_BASE}?a=xml&uid=#{user_id}&code=#{xml_code}&sa=#{data_type}"
         params = {"a": "xml", "uid": str(self._cfg.user_id), "code": self._cfg.xml_code, "sa": sa}
+        for k, v in extra_params.items():
+            if v is None:
+                continue
+            params[str(k)] = str(v)
         resp = self._client.get(XML_BASE, params=params)
         resp.raise_for_status()
-        return resp.text
+        text = resp.text
+        # Nexus XML errors are commonly returned as:
+        # <?xml ...?><data><error>...</error></data>
+        if "<error>" in text.lower():
+            start = text.lower().find("<error>")
+            end = text.lower().find("</error>", start + 7)
+            if start >= 0 and end > start:
+                msg = text[start + 7 : end].strip()
+                raise RuntimeError(f"Nexus XML error for sa={sa}: {msg}")
+        return text
 
