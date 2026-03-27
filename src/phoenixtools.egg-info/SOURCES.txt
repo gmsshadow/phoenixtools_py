@@ -20,6 +20,7 @@ src/phoenixtools_app/services/import_cbodies.py
 src/phoenixtools_app/services/import_jump_map.py
 src/phoenixtools_app/services/import_market.py
 src/phoenixtools_app/services/import_setup.py
+src/phoenixtools_app/services/import_turn.py
 src/phoenixtools_app/services/pathing.py
 src/phoenixtools_app/services/phoenix_order.py
 src/phoenixtools_app/services/trade_routes.py

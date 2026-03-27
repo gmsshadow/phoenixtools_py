@@ -55,3 +55,49 @@ class NexusHtmlClient:
         resp.raise_for_status()
         return resp.text
 
+    def get_turn_html(self, base_id: int) -> str:
+        """
+        Mirrors Rails `get_turn(id)`:
+        - Load turns list page.
+        - Find the specific base anchor containing '(id)'.
+        - Follow onclick popup URL to the report page.
+        """
+        if not self._logged_in:
+            self.login()
+
+        list_html = self._client.get(
+            INDEX_URL,
+            params={"a": "turns", "sa": "list", "la": "find", "id": str(base_id)},
+        )
+        list_html.raise_for_status()
+
+        from lxml import html as lxml_html
+
+        doc = lxml_html.fromstring(list_html.text)
+        for td in doc.xpath('//td[contains(@class,"turns_tab_off")]'):
+            a = td.xpath(".//a")
+            if not a:
+                continue
+            anchor = a[0]
+            text = (anchor.text_content() or "").strip()
+            if f"({base_id})" not in text:
+                continue
+            onclick = (anchor.get("onclick") or "").strip()
+            # Example: window.open('/index.php?a=...','_blank',...)
+            start = onclick.find("/index.php")
+            if start < 0:
+                continue
+            end = onclick.find('"', start)
+            if end < 0:
+                end = onclick.find("'", start)
+            if end < 0:
+                end = len(onclick)
+            url_path = onclick[start:end]
+            if not url_path.startswith("/"):
+                url_path = "/" + url_path
+            report = self._client.get(f"http://{NEXUS_DOMAIN}{url_path}")
+            report.raise_for_status()
+            return report.text
+
+        raise RuntimeError(f"Turn report for base {base_id} not found (turns list did not contain it).")
+

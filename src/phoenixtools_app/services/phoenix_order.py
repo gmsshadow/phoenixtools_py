@@ -42,6 +42,10 @@ class PhoenixOrder:
         return cls([3080, 1, star_system_id])
 
     @classmethod
+    def move_to_base(cls, starbase_id: int, dock: bool = False) -> "PhoenixOrder":
+        return cls([3140, 1, starbase_id, cls._bool(dock)])
+
+    @classmethod
     def buy(cls, starbase_id: int, item_id: int, quantity: int, install: bool = False, private: bool = False) -> "PhoenixOrder":
         return cls([2040, 0, starbase_id, item_id, quantity, cls._bool(install), cls._bool(private)])
 
@@ -52,6 +56,34 @@ class PhoenixOrder:
     @classmethod
     def wait_for_tus(cls, tus: int = 300, exact: bool = False) -> "PhoenixOrder":
         return cls([2520, 0, tus, cls._bool(exact)])
+
+    @classmethod
+    def create_item_group(cls, item_group: str) -> "PhoenixOrder":
+        return cls([2760, 0, cls._str(item_group)])
+
+    @classmethod
+    def set_item_group(
+        cls, item_group: str, item_id: int, quantity: int, add: bool = False, standing_order: int = 0
+    ) -> "PhoenixOrder":
+        return cls([2790, standing_order, cls._str(item_group), item_id, quantity, cls._bool(add)])
+
+    @classmethod
+    def pickup_from_item_group(cls, starbase_id: int, quantity: int, item_group: str, security: str = "") -> "PhoenixOrder":
+        return cls([2800, 0, starbase_id, cls._str(item_group), quantity, cls._str(security)])
+
+    @classmethod
+    def deliver_items(
+        cls, starbase_id: int, quantity: int, item_type: int = 0, security: str = "", install: bool = False
+    ) -> "PhoenixOrder":
+        return cls([2380, 0, starbase_id, item_type, quantity, cls._str(security), cls._bool(install)])
+
+    @classmethod
+    def squadron_start(cls, shared_turn: bool = True) -> "PhoenixOrder":
+        return cls([5110, 0, cls._bool(shared_turn)])
+
+    @classmethod
+    def squadron_stop(cls) -> "PhoenixOrder":
+        return cls([5120, 0])
 
     @classmethod
     def gpi_row(cls, row: int, start_x: int, end_x: int, ore_type: int = 0) -> "PhoenixOrder":

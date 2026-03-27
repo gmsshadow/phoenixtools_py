@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 from sqlmodel import Session, select
 
 from phoenixtools_app.db.engine import make_engine, make_session
-from phoenixtools_app.db.models import Base, CelestialBody, StarSystem
+from phoenixtools_app.db.models import Base, BaseItem, CelestialBody, Item, ItemGroup, StarSystem
+from phoenixtools_app.services.import_turn import run_turn_import
 
 
 class BasesPage(QWidget):
@@ -48,21 +49,41 @@ class BasesPage(QWidget):
         left_layout.addWidget(self.table, 1)
 
         right = QWidget()
-        right_layout = QFormLayout(right)
-        right_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        right_layout = QVBoxLayout(right)
 
+        detail = QWidget()
+        detail_layout = QFormLayout(detail)
+        detail_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.base_id = QLabel("—")
         self.base_name = QLabel("—")
         self.location = QLabel("—")
         self.facilities = QLabel("—")
 
         self.copy_id_btn = QPushButton("Copy base ID")
+        self.fetch_turn_btn = QPushButton("Fetch turn (inventory + item groups)")
 
-        right_layout.addRow("ID", self.base_id)
-        right_layout.addRow("Name", self.base_name)
-        right_layout.addRow("Location", self.location)
-        right_layout.addRow("Facilities", self.facilities)
-        right_layout.addRow("", self.copy_id_btn)
+        self.inventory = QTableWidget(0, 3)
+        self.inventory.setHorizontalHeaderLabels(["Qty", "Item", "Item ID"])
+        self.inventory.setAlternatingRowColors(True)
+        self.inventory.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        self.groups = QTableWidget(0, 4)
+        self.groups.setHorizontalHeaderLabels(["Group ID", "Group name", "Item", "Qty"])
+        self.groups.setAlternatingRowColors(True)
+        self.groups.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        detail_layout.addRow("ID", self.base_id)
+        detail_layout.addRow("Name", self.base_name)
+        detail_layout.addRow("Location", self.location)
+        detail_layout.addRow("Facilities", self.facilities)
+        detail_layout.addRow("", self.copy_id_btn)
+        detail_layout.addRow("", self.fetch_turn_btn)
+
+        right_layout.addWidget(detail)
+        right_layout.addWidget(QLabel("<b>Inventory (from turn)</b>"))
+        right_layout.addWidget(self.inventory, 1)
+        right_layout.addWidget(QLabel("<b>Item groups (from turn)</b>"))
+        right_layout.addWidget(self.groups, 1)
 
         root.addWidget(left, 3)
         root.addWidget(right, 2)
@@ -71,6 +92,7 @@ class BasesPage(QWidget):
         self.filter.textChanged.connect(self._apply_filter)
         self.table.itemSelectionChanged.connect(self._show_detail)
         self.copy_id_btn.clicked.connect(self._copy_id)
+        self.fetch_turn_btn.clicked.connect(self._fetch_turn)
 
         self._refresh()
 
@@ -151,6 +173,7 @@ class BasesPage(QWidget):
                 ]
             )
         )
+        self._load_turn_data(int(b.id))
 
     def _copy_id(self) -> None:
         row = self._selected_row()
@@ -160,6 +183,53 @@ class BasesPage(QWidget):
         b, _, _ = row
         self.window().clipboard().setText(str(b.id))
         QMessageBox.information(self, "Copied", "Base ID copied to clipboard.")
+
+    def _fetch_turn(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            QMessageBox.information(self, "No selection", "Select a base first.")
+            return
+        b, _, _ = row
+        try:
+            with make_session(self._engine) as session:
+                result = run_turn_import(session, int(b.id))
+            QMessageBox.information(
+                self,
+                "Turn imported",
+                f"Imported base {result.base_id}: inventory={result.inventory_items}, "
+                f"item groups={result.item_groups} ({result.item_group_rows} rows).",
+            )
+            self._load_turn_data(int(b.id))
+        except Exception as e:
+            QMessageBox.critical(self, "Turn import failed", str(e))
+
+    def _load_turn_data(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            inv = session.exec(
+                select(BaseItem, Item)
+                .where(BaseItem.base_id == base_id)
+                .where(BaseItem.item_id == Item.id)
+                .order_by(BaseItem.quantity.desc())
+            ).all()
+            groups = session.exec(
+                select(ItemGroup, Item)
+                .where(ItemGroup.base_id == base_id)
+                .where(ItemGroup.item_id == Item.id)
+                .order_by(ItemGroup.group_id, Item.name)
+            ).all()
+
+        self.inventory.setRowCount(len(inv))
+        for r, (bi, item) in enumerate(inv):
+            self.inventory.setItem(r, 0, _cell(str(bi.quantity), align=Qt.AlignmentFlag.AlignRight))
+            self.inventory.setItem(r, 1, _cell(item.name))
+            self.inventory.setItem(r, 2, _cell(str(item.id), align=Qt.AlignmentFlag.AlignRight))
+
+        self.groups.setRowCount(len(groups))
+        for r, (ig, item) in enumerate(groups):
+            self.groups.setItem(r, 0, _cell(str(ig.group_id), align=Qt.AlignmentFlag.AlignRight))
+            self.groups.setItem(r, 1, _cell(ig.name))
+            self.groups.setItem(r, 2, _cell(item.name))
+            self.groups.setItem(r, 3, _cell(str(ig.quantity), align=Qt.AlignmentFlag.AlignRight))
 
 
 def _load_bases(session: Session) -> list[tuple[Base, StarSystem | None, CelestialBody | None]]:

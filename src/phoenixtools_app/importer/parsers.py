@@ -232,6 +232,119 @@ def parse_system_cbodies_html(html_text: str) -> SystemCbodiesData:
     return SystemCbodiesData(cbodies=list(values.values()))
 
 
+@dataclass(frozen=True)
+class TurnData:
+    inventory: dict[int, int]
+    item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
+
+
+def parse_turn_html(html_text: str) -> TurnData:
+    """
+    Partial port of Rails `NexusTurn`:
+    - Parses "Inventory Report" into item_id -> quantity
+    - Parses "Item Group: NAME (ID)" sections into grouped items
+    """
+    doc = lxml_html.fromstring(html_text)
+
+    def parse_table_rows(table_node) -> list[list[str]]:
+        rows: list[list[str]] = []
+        if table_node is None:
+            return rows
+        for tr in table_node.xpath(".//tr"):
+            cols = []
+            for td in tr.xpath("./td"):
+                txt = (td.text_content() or "").strip()
+                if txt:
+                    cols.append(txt)
+            if cols:
+                rows.append(cols)
+        return rows
+
+    def find_section_table(heading: str):
+        # Find <td class="report_left">Heading</td>, then use a heuristic:
+        # the next table-containing sibling in the report layout.
+        for n in doc.xpath('//td[contains(@class,"report_left")]'):
+            if (n.text_content() or "").strip() != heading:
+                continue
+            cur = n.getparent()
+            for _ in range(10):
+                if cur is None:
+                    break
+                cur = cur.getnext()
+                if cur is None:
+                    break
+                tables = cur.xpath(".//table")
+                if tables:
+                    return tables[0]
+        return None
+
+    def parse_item_str(item_str: str) -> tuple[int, str] | None:
+        # "Name (123)" -> (123, "Name")
+        if "(" not in item_str or ")" not in item_str:
+            return None
+        name = item_str.split("(", 1)[0].strip()
+        id_part = item_str.split("(", 1)[1].split(")", 1)[0].strip()
+        try:
+            return int(id_part), name
+        except ValueError:
+            return None
+
+    inventory: dict[int, int] = {}
+    inv_table = find_section_table("Inventory Report")
+    inv_rows = parse_table_rows(inv_table)
+    for row in inv_rows[1:]:
+        if len(row) < 2:
+            continue
+        qty = _parse_int(row[0])
+        parsed = parse_item_str(row[1])
+        if qty is None or parsed is None:
+            continue
+        item_id, _name = parsed
+        inventory[item_id] = inventory.get(item_id, 0) + int(qty)
+
+    item_groups: dict[int, dict[str, object]] = {}
+    for n in doc.xpath('//td[contains(@class,"report_left")]'):
+        heading = (n.text_content() or "").strip()
+        if "Item Group" not in heading:
+            continue
+        # "Item Group: NAME (123)"
+        if ":" not in heading or "(" not in heading or ")" not in heading:
+            continue
+        after = heading.split(":", 1)[1].strip()
+        name = after.split("(", 1)[0].strip()
+        id_part = after.split("(", 1)[1].split(")", 1)[0].strip()
+        try:
+            group_id = int(id_part)
+        except ValueError:
+            continue
+        table = None
+        cur = n.getparent()
+        for _ in range(10):
+            if cur is None:
+                break
+            cur = cur.getnext()
+            if cur is None:
+                break
+            tables = cur.xpath(".//table")
+            if tables:
+                table = tables[0]
+                break
+        rows = parse_table_rows(table)
+        items: dict[int, int] = {}
+        for r in rows[1:]:
+            if len(r) < 2:
+                continue
+            qty = _parse_int(r[0])
+            parsed = parse_item_str(r[1])
+            if qty is None or parsed is None:
+                continue
+            item_id, _nm = parsed
+            items[item_id] = items.get(item_id, 0) + int(qty)
+        item_groups[group_id] = {"name": name, "items": items}
+
+    return TurnData(inventory=inventory, item_groups=item_groups)
+
+
 def _parse_int(s: str | None) -> int | None:
     if not s:
         return None

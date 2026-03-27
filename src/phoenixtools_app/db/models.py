@@ -123,3 +123,20 @@ class Path(SQLModel, table=True):
     tu_cost: int
 
 
+class BaseItem(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    base_id: int = Field(foreign_key="base.id")
+    item_id: int = Field(foreign_key="item.id")
+    quantity: int
+    category: str
+
+
+class ItemGroup(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    base_id: int = Field(foreign_key="base.id")
+    group_id: int
+    name: str
+    item_id: int = Field(foreign_key="item.id")
+    quantity: int
+
+
