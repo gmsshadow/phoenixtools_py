@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
-from phoenixtools_app.db.models import Base, Item, MarketBuy, MarketSell
+from phoenixtools_app.db.models import Base, CelestialBody, Item, MarketBuy, MarketSell
+from phoenixtools_app.services.pathing import shortest_path
+from phoenixtools_app.services.phoenix_order import PhoenixOrder
 
 
 @dataclass(frozen=True)
@@ -84,13 +86,65 @@ def generate_trade_routes(session: Session, *, limit: int = 500) -> list[TradeRo
 
 
 def orders_for_candidate(c: TradeRouteCandidate) -> str:
-    # Placeholder until we port `PhoenixOrder` and pathing.
+    # This function is called by the UI without passing a session.
+    # Keep it pure text by emitting a header only; the UI will call the
+    # session-backed variant below.
     return "\n".join(
         [
             f"; TradeRoute: {c.item_name}",
-            f"; Buy at: {c.from_base_name} (sell price {c.sell_price})",
-            f"; Sell at: {c.to_base_name} (buy price {c.buy_price})",
-            f"; Volume: {c.volume}",
+            "; (orders require database session)",
         ]
     )
+
+
+def orders_for_candidate_with_session(session: Session, c: TradeRouteCandidate) -> str:
+    from_base = session.get(Base, c.from_base_id)
+    to_base = session.get(Base, c.to_base_id)
+    if from_base is None or to_base is None:
+        return "; ERROR: missing base(s) in database"
+    if from_base.star_system_id is None or to_base.star_system_id is None:
+        return "; ERROR: base missing star_system_id"
+
+    from_cbody_id = None
+    if from_base.celestial_body_id is not None:
+        cb = session.get(CelestialBody, int(from_base.celestial_body_id))
+        from_cbody_id = cb.cbody_id if cb is not None else None
+    to_cbody_id = None
+    if to_base.celestial_body_id is not None:
+        cb = session.get(CelestialBody, int(to_base.celestial_body_id))
+        to_cbody_id = cb.cbody_id if cb is not None else None
+
+    lines: list[str] = []
+    lines.append(f"; TradeRoute: {c.item_name}")
+    lines.append(f"; Buy at: {c.from_base_name} (sell {c.sell_price})")
+    lines.append(f"; Sell at: {c.to_base_name} (buy {c.buy_price})")
+    lines.append(f"; Volume: {c.volume}")
+    lines.append("")
+
+    orders: list[PhoenixOrder] = []
+    orders.append(PhoenixOrder.navigation_hazard_status(True))
+
+    # Move to source base planet (if known), then buy.
+    if from_cbody_id is not None:
+        orders.append(PhoenixOrder.move_to_planet(int(from_base.star_system_id), int(from_cbody_id)))
+    orders.append(PhoenixOrder.buy(int(from_base.id), int(c.item_id), int(c.volume)))
+
+    # Travel (jump links) between systems.
+    path = shortest_path(session, int(from_base.star_system_id), int(to_base.star_system_id))
+    if path is None:
+        lines.append("; ERROR: no path between systems")
+    else:
+        if len(path.system_ids) > 1:
+            orders.append(PhoenixOrder.move_to_random_jump_quad())
+        for sys_id in path.system_ids[1:]:
+            orders.append(PhoenixOrder.jump(int(sys_id)))
+
+    # Move to destination base planet (if known), then sell.
+    if to_cbody_id is not None:
+        orders.append(PhoenixOrder.move_to_planet(int(to_base.star_system_id), int(to_cbody_id)))
+    orders.append(PhoenixOrder.sell(int(to_base.id), int(c.item_id), int(c.volume)))
+    orders.append(PhoenixOrder.wait_for_tus(240))
+
+    lines.extend(str(o) for o in orders)
+    return "\n".join(lines)
 

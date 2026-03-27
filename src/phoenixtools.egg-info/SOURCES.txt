@@ -20,7 +20,13 @@ src/phoenixtools_app/services/import_cbodies.py
 src/phoenixtools_app/services/import_jump_map.py
 src/phoenixtools_app/services/import_market.py
 src/phoenixtools_app/services/import_setup.py
+src/phoenixtools_app/services/pathing.py
+src/phoenixtools_app/services/phoenix_order.py
 src/phoenixtools_app/services/trade_routes.py
+src/phoenixtools_app/ui/bases_page.py
+src/phoenixtools_app/ui/celestial_bodies_page.py
 src/phoenixtools_app/ui/data_browser_page.py
+src/phoenixtools_app/ui/items_page.py
 src/phoenixtools_app/ui/main_window.py
+src/phoenixtools_app/ui/star_systems_page.py
 src/phoenixtools_app/ui/trade_routes_page.py

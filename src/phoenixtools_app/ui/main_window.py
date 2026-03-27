@@ -26,6 +26,10 @@ from phoenixtools_app.services.import_market import run_market_import
 from phoenixtools_app.services.full_refresh import run_full_refresh
 from phoenixtools_app.ui.trade_routes_page import TradeRoutesPage
 from phoenixtools_app.ui.data_browser_page import DataBrowserPage
+from phoenixtools_app.ui.bases_page import BasesPage
+from phoenixtools_app.ui.items_page import ItemsPage
+from phoenixtools_app.ui.star_systems_page import StarSystemsPage
+from phoenixtools_app.ui.celestial_bodies_page import CelestialBodiesPage
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +72,14 @@ class MainWindow(QMainWindow):
                 self.pages.addWidget(ConfigurationPage())
             elif title == "Trade routes":
                 self.pages.addWidget(TradeRoutesPage())
+            elif title == "Bases":
+                self.pages.addWidget(BasesPage())
+            elif title == "Items":
+                self.pages.addWidget(ItemsPage())
+            elif title == "Star systems":
+                self.pages.addWidget(StarSystemsPage())
+            elif title == "Celestial bodies":
+                self.pages.addWidget(CelestialBodiesPage())
             elif title == "Data browser":
                 self.pages.addWidget(DataBrowserPage())
             else:

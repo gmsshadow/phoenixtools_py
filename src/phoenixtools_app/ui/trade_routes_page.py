@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QMessageBox,
     QPushButton,
@@ -13,7 +14,11 @@ from PySide6.QtWidgets import (
 )
 
 from phoenixtools_app.db.engine import make_engine, make_session
-from phoenixtools_app.services.trade_routes import TradeRouteCandidate, generate_trade_routes, orders_for_candidate
+from phoenixtools_app.services.trade_routes import (
+    TradeRouteCandidate,
+    generate_trade_routes,
+    orders_for_candidate_with_session,
+)
 
 
 class TradeRoutesPage(QWidget):
@@ -83,20 +88,20 @@ class TradeRoutesPage(QWidget):
 
     def _show_orders_preview(self) -> None:
         tr = self._selected()
-        self.orders.setPlainText("" if tr is None else orders_for_candidate(tr))
+        if tr is None:
+            self.orders.setPlainText("")
+            return
+        with make_session(self._engine) as session:
+            self.orders.setPlainText(orders_for_candidate_with_session(session, tr))
 
     def _copy_orders(self) -> None:
         tr = self._selected()
         if tr is None:
             QMessageBox.information(self, "No selection", "Select a route first.")
             return
-        text = orders_for_candidate(tr)
-        cb = self.window().clipboard() if hasattr(self.window(), "clipboard") else None
-        if cb is None:
-            # QApplication.clipboard() is globally available, but avoid importing QApplication here.
-            QMessageBox.information(self, "Orders", text)
-            return
-        cb.setText(text)
+        with make_session(self._engine) as session:
+            text = orders_for_candidate_with_session(session, tr)
+        QApplication.clipboard().setText(text)
         QMessageBox.information(self, "Copied", "Orders copied to clipboard.")
 
 
