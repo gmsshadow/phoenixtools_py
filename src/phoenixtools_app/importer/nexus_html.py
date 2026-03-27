@@ -75,20 +75,28 @@ class NexusHtmlClient:
 
         doc = lxml_html.fromstring(list_html.text)
 
-        # Be forgiving: Rails looks under `td.turns_tab_off`, but Nexus markup varies.
-        # Search all anchors for one that includes "(<id>)".
+        # Be forgiving: Rails looks under `td.turns_tab_off` and matches "(id)" in link text,
+        # but Nexus markup varies (sometimes ID appears without parentheses, or only in onclick/href).
         anchors = doc.xpath("//a")
         target = None
+        needle = str(base_id)
         for a in anchors:
             text = (a.text_content() or "").strip()
-            if f"({base_id})" in text:
+            onclick = (a.get("onclick") or "").strip()
+            href = (a.get("href") or "").strip()
+            if (
+                f"({needle})" in text
+                or needle in text
+                or needle in onclick
+                or needle in href
+            ):
                 target = a
                 break
 
         if target is None:
             raise RuntimeError(
                 f"Turn report for base {base_id} not found. "
-                "The turns list page did not contain a link with that '(id)'. "
+                "The turns list page did not contain a link matching that ID. "
                 "This can happen if the base isn't visible to the logged-in user yet."
             )
 
