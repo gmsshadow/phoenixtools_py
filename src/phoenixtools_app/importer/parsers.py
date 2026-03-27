@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lxml import etree
 from lxml import html as lxml_html
@@ -232,12 +232,176 @@ def parse_system_cbodies_html(html_text: str) -> SystemCbodiesData:
     return SystemCbodiesData(cbodies=list(values.values()))
 
 
+def _parse_item_name_id(item_str: str) -> tuple[int, str] | None:
+    if "(" not in item_str or ")" not in item_str:
+        return None
+    name = item_str.split("(", 1)[0].strip()
+    id_part = item_str.split("(", 1)[1].split(")", 1)[0].strip()
+    try:
+        return int(id_part), name
+    except ValueError:
+        return None
+
+
+def _parse_html_table_rows(table_node) -> list[list[str]]:
+    rows: list[list[str]] = []
+    if table_node is None:
+        return rows
+    for tr in table_node.xpath(".//tr"):
+        cols = []
+        for td in tr.xpath("./td"):
+            txt = (td.text_content() or "").strip()
+            if txt:
+                cols.append(txt)
+        if cols:
+            rows.append(cols)
+    return rows
+
+
+def _report_sections_from_doc(doc) -> dict[str, list[list[str]]]:
+    """Collect table rows following each `td.report_left` heading (Rails NexusTurn-style layout)."""
+    out: dict[str, list[list[str]]] = {}
+    for cell in doc.xpath('//td[contains(@class,"report_left")]'):
+        title = (cell.text_content() or "").strip()
+        if not title:
+            continue
+        tr = cell.xpath("ancestor::tr[1]")
+        if not tr:
+            continue
+        tr = tr[0]
+        block: list[list[str]] = []
+        for sib in tr.itersiblings():
+            if sib.tag == "table":
+                block.extend(_parse_html_table_rows(sib))
+            for tbl in sib.xpath(".//table"):
+                block.extend(_parse_html_table_rows(tbl))
+        out[title] = block
+    return out
+
+
+def _parse_mass_production_rows(rows: list[list[str]]) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for row in rows[1:]:
+        if len(row) < 4:
+            continue
+        low0 = row[0].lower()
+        if low0.startswith("basic") or low0 == "item":
+            continue
+        parsed = _parse_item_name_id(row[0])
+        if parsed is None:
+            continue
+        item_id, _nm = parsed
+        try:
+            factories = int(row[1])
+            carry = int(row[2])
+        except (ValueError, IndexError):
+            continue
+        status = row[3] if len(row) > 3 else ""
+        out.append({"item_id": item_id, "factories": factories, "carry": carry, "status": status})
+    return out
+
+
+def _read_resource_row_nexus(row: list[str]) -> tuple[int, dict[str, object]] | None:
+    if len(row) < 5:
+        return None
+    parsed = _parse_item_name_id(row[0])
+    if parsed is None:
+        return None
+    item_id, item_name = parsed
+    try:
+        resource_id = int(row[1])
+        resource_yield = float(row[2])
+        resource_drop = int(row[3])
+    except (ValueError, IndexError):
+        return None
+    rs = row[4]
+    resource_size = -999
+    if rs and "infinite" not in rs.lower():
+        try:
+            resource_size = int(rs)
+        except ValueError:
+            resource_size = -999
+    return resource_id, {
+        "item_id": item_id,
+        "item_name": item_name,
+        "resource_id": resource_id,
+        "resource_yield": resource_yield,
+        "resource_drop": resource_drop,
+        "resource_size": resource_size,
+        "ore_mines": 0,
+        "resource_complexes": 0,
+        "output": None,
+    }
+
+
+def _merge_base_resources_from_sections(sections: dict[str, list[list[str]]]) -> list[dict[str, object]]:
+    """Port of Rails `NexusTurn#resources` merge (mineral + mining + resource + extraction)."""
+    mining: dict[int, dict[str, object]] = {}
+    mrs = sections.get("Mineral Report") or []
+    for row in mrs[1:]:
+        got = _read_resource_row_nexus(row)
+        if got is None:
+            continue
+        rid, res = got
+        mining[rid] = res
+
+    mrs2 = sections.get("Mining Report") or []
+    for row in mrs2[1:]:
+        if len(row) < 5:
+            continue
+        try:
+            rid = int(row[3])
+        except (ValueError, IndexError):
+            continue
+        resource = mining.get(rid)
+        if resource is None:
+            continue
+        try:
+            resource["ore_mines"] = int(row[0])
+            resource["output"] = float(row[4])
+        except (ValueError, IndexError):
+            pass
+
+    resourcing: dict[int, dict[str, object]] = {}
+    mrs3 = sections.get("Resource Report") or []
+    for row in mrs3[1:]:
+        got = _read_resource_row_nexus(row)
+        if got is None:
+            continue
+        rid, res = got
+        resourcing[rid] = res
+
+    mrs4 = sections.get("Resource Extraction Report") or []
+    for row in mrs4[1:]:
+        if len(row) < 5:
+            continue
+        try:
+            rid = int(row[2])
+        except (ValueError, IndexError):
+            continue
+        resource = resourcing.get(rid)
+        if resource is None:
+            continue
+        try:
+            resource["resource_complexes"] = int(row[0])
+            resource["output"] = float(row[4])
+        except (ValueError, IndexError):
+            pass
+
+    merged: list[dict[str, object]] = []
+    merged.extend(mining.values())
+    merged.extend(resourcing.values())
+    return merged
+
+
 @dataclass(frozen=True)
 class TurnData:
     inventory: dict[int, int]
     trade_items: dict[int, int]
     raw_materials: dict[int, int]
     item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
+    mass_production: list[dict[str, object]] = field(default_factory=list)
+    base_resources: list[dict[str, object]] = field(default_factory=list)
 
 
 def _unwrap_possible_xml_to_html(payload: str) -> str:
@@ -326,17 +490,6 @@ def parse_turn_html(html_text: str) -> TurnData:
                     return tables[0]
         return None
 
-    def parse_item_str(item_str: str) -> tuple[int, str] | None:
-        # "Name (123)" -> (123, "Name")
-        if "(" not in item_str or ")" not in item_str:
-            return None
-        name = item_str.split("(", 1)[0].strip()
-        id_part = item_str.split("(", 1)[1].split(")", 1)[0].strip()
-        try:
-            return int(id_part), name
-        except ValueError:
-            return None
-
     def parse_qty_name_table(heading: str) -> dict[int, int]:
         out: dict[int, int] = {}
         tbl = find_section_table(heading)
@@ -344,7 +497,7 @@ def parse_turn_html(html_text: str) -> TurnData:
             if len(row) < 2:
                 continue
             qty = _parse_int(row[0])
-            parsed = parse_item_str(row[1])
+            parsed = _parse_item_name_id(row[1])
             if qty is None or parsed is None:
                 continue
             item_id, _name = parsed
@@ -388,18 +541,24 @@ def parse_turn_html(html_text: str) -> TurnData:
             if len(r) < 2:
                 continue
             qty = _parse_int(r[0])
-            parsed = parse_item_str(r[1])
+            parsed = _parse_item_name_id(r[1])
             if qty is None or parsed is None:
                 continue
             item_id, _nm = parsed
             items[item_id] = items.get(item_id, 0) + int(qty)
         item_groups[group_id] = {"name": name, "items": items}
 
+    sections = _report_sections_from_doc(doc)
+    mass_production = _parse_mass_production_rows(sections.get("Production Report") or [])
+    base_resources = _merge_base_resources_from_sections(sections)
+
     return TurnData(
         inventory=inventory,
         trade_items=trade_items,
         raw_materials=raw_materials,
         item_groups=item_groups,
+        mass_production=mass_production,
+        base_resources=base_resources,
     )
 
 

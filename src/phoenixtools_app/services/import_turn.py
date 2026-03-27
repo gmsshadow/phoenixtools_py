@@ -5,7 +5,7 @@ from typing import Callable
 
 from sqlmodel import Session, delete, select
 
-from phoenixtools_app.db.models import Base, BaseItem, Item, ItemGroup, NexusConfig
+from phoenixtools_app.db.models import Base, BaseItem, BaseResource, Item, ItemGroup, MassProduction, NexusConfig
 from phoenixtools_app.importer.nexus_html import NexusHtmlClient, NexusHtmlConfig
 from phoenixtools_app.importer.nexus_xml import NexusXmlClient, NexusXmlConfig
 from phoenixtools_app.importer.parsers import parse_turn_html
@@ -64,6 +64,8 @@ def run_turn_import(session: Session, base_id: int, *, progress: ProgressCb | No
     # Clear old.
     session.exec(delete(BaseItem).where(BaseItem.base_id == int(base.id)))
     session.exec(delete(ItemGroup).where(ItemGroup.base_id == int(base.id)))
+    session.exec(delete(MassProduction).where(MassProduction.base_id == int(base.id)))
+    session.exec(delete(BaseResource).where(BaseResource.base_id == int(base.id)))
     session.commit()
 
     def _add_base_items(qty_map: dict[int, int], category: str) -> int:
@@ -104,6 +106,44 @@ def run_turn_import(session: Session, base_id: int, *, progress: ProgressCb | No
                 )
             )
             group_rows += 1
+
+    for mp in parsed.mass_production:
+        item = session.get(Item, int(mp["item_id"]))
+        if item is None:
+            item = Item(id=int(mp["item_id"]), name=f"Item {mp['item_id']}")
+            session.add(item)
+            session.commit()
+        session.add(
+            MassProduction(
+                base_id=int(base.id),
+                item_id=int(mp["item_id"]),
+                factories=int(mp["factories"]),
+                carry=int(mp["carry"]),
+                status=str(mp.get("status") or "") or None,
+            )
+        )
+
+    for br in parsed.base_resources:
+        iid = int(br["item_id"])
+        item = session.get(Item, iid)
+        if item is None:
+            item = Item(id=iid, name=str(br.get("item_name") or f"Item {iid}"))
+            session.add(item)
+            session.commit()
+        out_v = br.get("output")
+        session.add(
+            BaseResource(
+                base_id=int(base.id),
+                item_id=iid,
+                resource_id=int(br["resource_id"]),
+                resource_yield=float(br["resource_yield"]),
+                resource_drop=int(br["resource_drop"]),
+                resource_size=int(br["resource_size"]),
+                ore_mines=int(br.get("ore_mines") or 0),
+                resource_complexes=int(br.get("resource_complexes") or 0),
+                output=float(out_v) if out_v is not None else None,
+            )
+        )
 
     session.commit()
     log("Turn import complete.")

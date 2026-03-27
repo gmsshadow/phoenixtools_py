@@ -81,6 +81,8 @@ class Base(SQLModel, table=True):
     affiliation_id: int | None = Field(default=None, foreign_key="affiliation.id")
     star_system_id: int | None = Field(default=None, foreign_key="starsystem.id")
     celestial_body_id: int | None = Field(default=None, foreign_key="celestialbody.id")
+    starbase: bool = Field(default=True)
+    hub_id: int | None = Field(default=None, foreign_key="base.id")
 
 
 class MarketDatum(SQLModel, table=True):
@@ -138,5 +140,27 @@ class ItemGroup(SQLModel, table=True):
     name: str
     item_id: int = Field(foreign_key="item.id")
     quantity: int
+
+
+class MassProduction(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    base_id: int = Field(foreign_key="base.id")
+    item_id: int = Field(foreign_key="item.id")
+    factories: int = 0
+    carry: int = 0
+    status: str | None = None
+
+
+class BaseResource(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    base_id: int = Field(foreign_key="base.id")
+    item_id: int = Field(foreign_key="item.id")
+    resource_id: int
+    resource_yield: float = 0.0
+    resource_drop: int = 0
+    resource_size: int = -999
+    ore_mines: int = 0
+    resource_complexes: int = 0
+    output: float | None = None
 
 

@@ -43,4 +43,12 @@ def _migrate_sqlite(engine) -> None:
             if "quad" not in cols:
                 conn.execute(text("ALTER TABLE celestialbody ADD COLUMN quad INTEGER"))
 
+    if "base" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("base")}
+        with engine.begin() as conn:
+            if "starbase" not in cols:
+                conn.execute(text("ALTER TABLE base ADD COLUMN starbase INTEGER DEFAULT 1"))
+            if "hub_id" not in cols:
+                conn.execute(text("ALTER TABLE base ADD COLUMN hub_id INTEGER"))
+
 

@@ -20,6 +20,7 @@ from phoenixtools_app.db.models import (
 )
 from phoenixtools_app.importer.market_xml import MarketXmlClient
 from phoenixtools_app.importer.parsers import parse_market_xml
+from phoenixtools_app.services.hub_link import link_outposts_to_hub, sync_base_starbase_from_positions
 
 
 ProgressCb = Callable[[str], None]
@@ -153,6 +154,10 @@ def run_market_import(session: Session, *, progress: ProgressCb | None = None) -
         app_state.updated_at = datetime.utcnow()
         session.add(app_state)
         session.commit()
+
+    log("Syncing starbase flags from positions + linking outposts to hubs …")
+    sync_base_starbase_from_positions(session)
+    link_outposts_to_hub(session)
 
     log("Market import complete.")
     return MarketImportResult(

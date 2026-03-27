@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from sqlmodel import Session, select
 
 from phoenixtools_app.db.engine import make_engine, make_session
-from phoenixtools_app.db.models import Base, BaseItem, CelestialBody, Item, ItemGroup, StarSystem
+from phoenixtools_app.db.models import Base, BaseItem, BaseResource, CelestialBody, Item, ItemGroup, MassProduction, StarSystem
 from phoenixtools_app.services.base_reports import (
     competitive_buy_orders_text,
     competitive_buy_rows,
@@ -74,6 +74,7 @@ class BasesPage(QWidget):
         self.base_name = QLabel("—")
         self.location = QLabel("—")
         self.facilities = QLabel("—")
+        self.base_role = QLabel("—")
 
         self.copy_id_btn = QPushButton("Copy base ID")
         self.fetch_turn_btn = QPushButton("Fetch turn (inventory + item groups)")
@@ -110,6 +111,7 @@ class BasesPage(QWidget):
         detail_layout.addRow("Name", self.base_name)
         detail_layout.addRow("Location", self.location)
         detail_layout.addRow("Facilities", self.facilities)
+        detail_layout.addRow("Role / hub", self.base_role)
         detail_layout.addRow("", self.copy_id_btn)
         detail_layout.addRow("", self.fetch_turn_btn)
 
@@ -163,6 +165,50 @@ class BasesPage(QWidget):
         comp_layout.addWidget(self.comp_copy_btn)
         self.tabs.addTab(comp_tab, "Competitive buys")
 
+        # --- Resource production (Rails resource_report / base_resources) ---
+        res_tab = QWidget()
+        res_layout = QVBoxLayout(res_tab)
+        res_layout.addWidget(
+            QLabel(
+                "<b>Resource production</b> — merged Mineral/Mining/Resource reports from the last fetched turn."
+            )
+        )
+        self.resource_table = QTableWidget(0, 8)
+        self.resource_table.setHorizontalHeaderLabels(
+            ["Item", "Res#", "Yield", "Drop", "Size", "Ore mines", "R.complex", "Output"]
+        )
+        self.resource_table.setAlternatingRowColors(True)
+        res_layout.addWidget(self.resource_table, 1)
+        self.tabs.addTab(res_tab, "Resources")
+
+        # --- Mass production ---
+        mass_tab = QWidget()
+        mass_layout = QVBoxLayout(mass_tab)
+        mass_layout.addWidget(QLabel("<b>Mass production</b> — Production Report from the last fetched turn."))
+        self.mass_table = QTableWidget(0, 4)
+        self.mass_table.setHorizontalHeaderLabels(["Item", "Factories", "Carry", "Status"])
+        self.mass_table.setAlternatingRowColors(True)
+        mass_layout.addWidget(self.mass_table, 1)
+        self.tabs.addTab(mass_tab, "Mass production")
+
+        # --- Outposts ---
+        out_tab = QWidget()
+        out_layout = QVBoxLayout(out_tab)
+        out_layout.addWidget(
+            QLabel(
+                "<b>Outposts</b> assigned to this hub (hub_id = selected base). "
+                "Choose a new starbase hub and click Save."
+            )
+        )
+        self.outpost_table = QTableWidget(0, 4)
+        self.outpost_table.setHorizontalHeaderLabels(["ID", "Name", "System / body", "New hub"])
+        self.outpost_table.setAlternatingRowColors(True)
+        self.outpost_save_btn = QPushButton("Save hub assignments")
+        self._outpost_hub_combos: list[tuple[int, QComboBox]] = []
+        out_layout.addWidget(self.outpost_table, 1)
+        out_layout.addWidget(self.outpost_save_btn)
+        self.tabs.addTab(out_tab, "Outposts")
+
         # --- Middleman tab ---
         mid_tab = QWidget()
         mid_layout = QVBoxLayout(mid_tab)
@@ -202,12 +248,13 @@ class BasesPage(QWidget):
         self.mid_gen_btn.clicked.connect(self._generate_middleman)
         self.mid_copy_btn.clicked.connect(self._copy_middleman)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.outpost_save_btn.clicked.connect(self._save_outpost_hubs)
 
         self._refresh()
         self._refresh_middleman_items()
 
     def _on_tab_changed(self, index: int) -> None:
-        if index == 3:
+        if self.tabs.tabText(index) == "Middleman":
             self._refresh_middleman_items()
 
     def _refresh(self) -> None:
@@ -268,6 +315,7 @@ class BasesPage(QWidget):
             self.base_name.setText("—")
             self.location.setText("—")
             self.facilities.setText("—")
+            self.base_role.setText("—")
             self._clear_report_tables()
             return
 
@@ -288,9 +336,19 @@ class BasesPage(QWidget):
             )
         )
         bid = int(b.id)
+        with make_session(self._engine) as session:
+            bb = session.get(Base, bid)
+            if bb:
+                role = "Starbase" if bb.starbase else "Outpost"
+                hub_txt = "—"
+                if bb.hub_id is not None:
+                    hb = session.get(Base, int(bb.hub_id))
+                    hub_txt = f"{hb.name if hb else ''} ({bb.hub_id})" if hb or bb.hub_id else str(bb.hub_id)
+                self.base_role.setText(f"{role} · hub_id={hub_txt}")
         self._load_turn_data(bid)
         self._load_trade_raw_tables(bid)
         self._load_competitive_table(bid)
+        self._load_resource_mass_outposts_tables(bid)
         self._refresh_shipping_controls(bid)
 
     def _clear_report_tables(self) -> None:
@@ -298,6 +356,16 @@ class BasesPage(QWidget):
         self.raw_table.setRowCount(0)
         self.comp_table.setRowCount(0)
         self._comp_text = ""
+        self.resource_table.setRowCount(0)
+        self.mass_table.setRowCount(0)
+        self._clear_outpost_widgets()
+
+    def _clear_outpost_widgets(self) -> None:
+        for r in range(self.outpost_table.rowCount()):
+            if self.outpost_table.cellWidget(r, 3) is not None:
+                self.outpost_table.removeCellWidget(r, 3)
+        self.outpost_table.setRowCount(0)
+        self._outpost_hub_combos = []
 
     def _copy_id(self) -> None:
         row = self._selected_row()
@@ -326,6 +394,7 @@ class BasesPage(QWidget):
             bid = int(b.id)
             self._load_turn_data(bid)
             self._load_trade_raw_tables(bid)
+            self._load_resource_mass_outposts_tables(bid)
         except Exception as e:
             QMessageBox.critical(self, "Turn import failed", str(e))
 
@@ -391,6 +460,94 @@ class BasesPage(QWidget):
             self.comp_table.setItem(r, 5, _cell(f"{row.best_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
             self.comp_table.setItem(r, 6, _cell(names.get(row.best_sell_base_id, str(row.best_sell_base_id))))
             self.comp_table.setItem(r, 7, _cell(names.get(int(row.best_buy_base_id), str(row.best_buy_base_id))))
+
+    def _load_resource_mass_outposts_tables(self, base_id: int) -> None:
+        self._load_resource_tab(base_id)
+        self._load_mass_tab(base_id)
+        self._load_outposts_tab(base_id)
+
+    def _load_resource_tab(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            rows = session.exec(
+                select(BaseResource, Item)
+                .where(BaseResource.base_id == base_id)
+                .where(BaseResource.item_id == Item.id)
+                .order_by(BaseResource.resource_id)
+            ).all()
+
+        self.resource_table.setRowCount(len(rows))
+        for r, (br, item) in enumerate(rows):
+            self.resource_table.setItem(r, 0, _cell(item.name))
+            self.resource_table.setItem(r, 1, _cell(str(br.resource_id), align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(r, 2, _cell(str(br.resource_yield), align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(r, 3, _cell(str(br.resource_drop), align=Qt.AlignmentFlag.AlignRight))
+            sz = "∞" if br.resource_size == -999 else str(br.resource_size)
+            self.resource_table.setItem(r, 4, _cell(sz, align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(r, 5, _cell(str(br.ore_mines), align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(r, 6, _cell(str(br.resource_complexes), align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(
+                r, 7, _cell("" if br.output is None else f"{br.output:.2f}", align=Qt.AlignmentFlag.AlignRight)
+            )
+
+    def _load_mass_tab(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            rows = session.exec(
+                select(MassProduction, Item)
+                .where(MassProduction.base_id == base_id)
+                .where(MassProduction.item_id == Item.id)
+                .order_by(Item.name)
+            ).all()
+
+        self.mass_table.setRowCount(len(rows))
+        for r, (mp, item) in enumerate(rows):
+            self.mass_table.setItem(r, 0, _cell(item.name))
+            self.mass_table.setItem(r, 1, _cell(str(mp.factories), align=Qt.AlignmentFlag.AlignRight))
+            self.mass_table.setItem(r, 2, _cell(str(mp.carry), align=Qt.AlignmentFlag.AlignRight))
+            self.mass_table.setItem(r, 3, _cell(mp.status or "—"))
+
+    def _load_outposts_tab(self, hub_base_id: int) -> None:
+        self._clear_outpost_widgets()
+        with make_session(self._engine) as session:
+            outposts = session.exec(select(Base).where(Base.hub_id == int(hub_base_id)).order_by(Base.name)).all()
+            starbases = session.exec(select(Base).where(Base.starbase == True).order_by(Base.name)).all()
+            systems = {int(s.id): s.name for s in session.exec(select(StarSystem)).all()}
+            cbodies = {int(c.id): c for c in session.exec(select(CelestialBody)).all()}
+
+        self.outpost_table.setRowCount(len(outposts))
+        for r, o in enumerate(outposts):
+            self.outpost_table.setItem(r, 0, _cell(str(o.id), align=Qt.AlignmentFlag.AlignRight))
+            self.outpost_table.setItem(r, 1, _cell(o.name or "—"))
+            loc = "—"
+            if o.star_system_id is not None:
+                loc = systems.get(int(o.star_system_id), str(o.star_system_id))
+            if o.celestial_body_id is not None and int(o.celestial_body_id) in cbodies:
+                cb = cbodies[int(o.celestial_body_id)]
+                loc = f"{loc} / {cb.name or '—'}"
+            self.outpost_table.setItem(r, 2, _cell(loc))
+            combo = QComboBox()
+            for sb in starbases:
+                combo.addItem(f"{sb.name or sb.id} ({sb.id})", int(sb.id))
+            ix = combo.findData(int(hub_base_id))
+            if ix >= 0:
+                combo.setCurrentIndex(ix)
+            self.outpost_table.setCellWidget(r, 3, combo)
+            self._outpost_hub_combos.append((int(o.id), combo))
+
+    def _save_outpost_hubs(self) -> None:
+        if not self._outpost_hub_combos:
+            QMessageBox.information(self, "Nothing to save", "No outposts listed for this hub.")
+            return
+        try:
+            with make_session(self._engine) as session:
+                for oid, combo in self._outpost_hub_combos:
+                    b = session.get(Base, int(oid))
+                    if b is not None:
+                        b.hub_id = int(combo.currentData())
+                        session.add(b)
+                session.commit()
+            QMessageBox.information(self, "Saved", "Hub assignments updated.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
 
     def _copy_competitive_orders(self) -> None:
         if not self._comp_text.strip() or self._comp_text.startswith("; No competitive"):
