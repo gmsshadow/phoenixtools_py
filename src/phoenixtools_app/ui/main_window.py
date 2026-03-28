@@ -208,11 +208,14 @@ class ConfigurationPage(QWidget):
         self.nexus_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.user_id = QLineEdit()
         self.xml_code = QLineEdit()
+        self.affiliation_id = QLineEdit()
+        self.affiliation_id.setPlaceholderText("Optional — your affiliation id (Rails Nexus.config.affiliation)")
 
         left_layout.addRow("Nexus user", self.nexus_user)
         left_layout.addRow("Nexus password", self.nexus_password)
         left_layout.addRow("User ID", self.user_id)
         left_layout.addRow("XML code", self.xml_code)
+        left_layout.addRow("Affiliation ID", self.affiliation_id)
 
         buttons = QWidget()
         buttons_layout = QHBoxLayout(buttons)
@@ -245,6 +248,7 @@ class ConfigurationPage(QWidget):
             self.nexus_password.setText(cfg.nexus_password or "")
             self.user_id.setText("" if cfg.user_id is None else str(cfg.user_id))
             self.xml_code.setText(cfg.xml_code or "")
+            self.affiliation_id.setText("" if cfg.affiliation_id is None else str(cfg.affiliation_id))
 
     def _save(self) -> None:
         with make_session(self._engine) as session:
@@ -254,6 +258,7 @@ class ConfigurationPage(QWidget):
             cfg.nexus_password = self.nexus_password.text() or None
             cfg.user_id = int(self.user_id.text()) if self.user_id.text().strip() else None
             cfg.xml_code = self.xml_code.text().strip() or None
+            cfg.affiliation_id = int(self.affiliation_id.text()) if self.affiliation_id.text().strip() else None
             session.add(cfg)
             session.commit()
         QMessageBox.information(self, "Saved", "Configuration saved.")

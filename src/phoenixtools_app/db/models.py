@@ -23,6 +23,7 @@ class NexusConfig(SQLModel, table=True):
     nexus_password: str | None = None
     user_id: int | None = None
     xml_code: str | None = None
+    affiliation_id: int | None = Field(default=None, foreign_key="affiliation.id")
 
 
 class ItemType(SQLModel, table=True):
@@ -59,6 +60,7 @@ class Position(SQLModel, table=True):
     design: str | None = None
     size: int | None = None
     size_type: str | None = None
+    loc_text: str | None = None
 
 
 class CelestialBody(SQLModel, table=True):

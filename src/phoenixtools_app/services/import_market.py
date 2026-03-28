@@ -8,7 +8,6 @@ from dateutil.parser import isoparse
 from sqlmodel import Session, delete, select
 
 from phoenixtools_app.db.models import (
-    Affiliation,
     AppState,
     Base,
     CelestialBody,
@@ -16,11 +15,16 @@ from phoenixtools_app.db.models import (
     MarketBuy,
     MarketDatum,
     MarketSell,
+    NexusConfig,
     StarSystem,
 )
 from phoenixtools_app.importer.market_xml import MarketXmlClient
 from phoenixtools_app.importer.parsers import parse_market_xml
-from phoenixtools_app.services.hub_link import link_outposts_to_hub, sync_base_starbase_from_positions
+from phoenixtools_app.services.hub_link import (
+    link_outposts_to_hub,
+    sync_base_starbase_from_positions,
+    upsert_bases_from_positions,
+)
 
 
 ProgressCb = Callable[[str], None]
@@ -155,7 +159,10 @@ def run_market_import(session: Session, *, progress: ProgressCb | None = None) -
         session.add(app_state)
         session.commit()
 
-    log("Syncing starbase flags from positions + linking outposts to hubs …")
+    log("Syncing bases from positions (create/update) + starbase flags + outpost hubs …")
+    ncfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
+    aff_id = int(ncfg.affiliation_id) if ncfg and ncfg.affiliation_id is not None else None
+    upsert_bases_from_positions(session, default_affiliation_id=aff_id)
     sync_base_starbase_from_positions(session)
     link_outposts_to_hub(session)
 

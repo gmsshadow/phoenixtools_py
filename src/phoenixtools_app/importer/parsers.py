@@ -7,6 +7,19 @@ from lxml import html as lxml_html
 
 
 @dataclass(frozen=True)
+class ParsedPositionLocation:
+    """Values extracted from Nexus `pos_list` / `loc_text` (Rails `parse_location!`)."""
+
+    star_system_id: int | None
+    cbody_game_id: int | None
+    docked_base_id: int | None
+
+    @property
+    def has_data(self) -> bool:
+        return self.star_system_id is not None or self.docked_base_id is not None
+
+
+@dataclass(frozen=True)
 class InfoData:
     items: list[tuple[int, str]]
     systems: list[tuple[int, str]]
@@ -61,6 +74,10 @@ def parse_pos_list(xml_text: str) -> PositionData:
             pid = int(num)
         except ValueError:
             continue
+        loc_nodes = pos.xpath(".//loc_text")
+        loc_text = None
+        if loc_nodes:
+            loc_text = "".join(loc_nodes[0].itertext()).strip() or None
         out.append(
             {
                 "id": pid,
@@ -69,9 +86,50 @@ def parse_pos_list(xml_text: str) -> PositionData:
                 "design": (pos.xpath("string(.//design)") or "").strip() or None,
                 "size": _parse_int((pos.xpath("string(.//size)") or "").strip().split(" ")[0]),
                 "size_type": _parse_size_type((pos.xpath("string(.//size)") or "").strip()),
+                "loc_text": loc_text,
             }
         )
     return PositionData(positions=out)
+
+
+def parse_position_loc_text(loc_str: str | None) -> ParsedPositionLocation:
+    """
+    Mirror Rails `NexusXMLClient#parse_location!` enough for Base star_system / cbody assignment.
+    """
+    if not loc_str or not loc_str.strip():
+        return ParsedPositionLocation(None, None, None)
+    parts = [p.strip() for p in loc_str.split(" - ")]
+    loc = ""
+    sys_name: str | None = None
+    if len(parts) > 2:
+        loc = parts[0]
+        sys_name = parts[2]
+    elif len(parts) > 1:
+        loc = parts[0]
+        sys_name = parts[1]
+    else:
+        loc = parts[0]
+
+    star_system_id: int | None = None
+    if sys_name and "(" in sys_name and ")" in sys_name:
+        try:
+            star_system_id = int(sys_name.split("(", 1)[1].split(")", 1)[0].strip())
+        except ValueError:
+            star_system_id = None
+
+    cbody_game_id: int | None = None
+    docked_base_id: int | None = None
+    if loc:
+        if "Docked" in loc:
+            docked_base_id = _first_paren_int(loc)
+        elif "Landed" in loc or "Orbit" in loc:
+            cbody_game_id = _first_paren_int(loc)
+
+    return ParsedPositionLocation(
+        star_system_id=star_system_id,
+        cbody_game_id=cbody_game_id,
+        docked_base_id=docked_base_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -560,6 +618,15 @@ def parse_turn_html(html_text: str) -> TurnData:
         mass_production=mass_production,
         base_resources=base_resources,
     )
+
+
+def _first_paren_int(s: str) -> int | None:
+    if "(" not in s or ")" not in s:
+        return None
+    try:
+        return int(s.split("(", 1)[1].split(")", 1)[0].strip())
+    except ValueError:
+        return None
 
 
 def _parse_int(s: str | None) -> int | None:

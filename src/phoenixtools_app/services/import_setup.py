@@ -17,6 +17,7 @@ from phoenixtools_app.db.models import (
 )
 from phoenixtools_app.importer.nexus_xml import NexusXmlClient, NexusXmlConfig
 from phoenixtools_app.importer.parsers import parse_info_data, parse_pos_list
+from phoenixtools_app.services.hub_link import link_outposts_to_hub, upsert_bases_from_positions
 
 
 ProgressCb = Callable[[str], None]
@@ -74,6 +75,11 @@ def run_setup_import(session: Session, *, progress: ProgressCb | None = None) ->
             positions_count += 1
 
         session.commit()
+
+        log("Upserting bases from positions + linking outpost hubs …")
+        aff_id = int(cfg.affiliation_id) if cfg.affiliation_id is not None else None
+        upsert_bases_from_positions(session, default_affiliation_id=aff_id)
+        link_outposts_to_hub(session)
 
         app_state = session.exec(select(AppState).where(AppState.id == 1)).first()
         if app_state:

@@ -51,4 +51,16 @@ def _migrate_sqlite(engine) -> None:
             if "hub_id" not in cols:
                 conn.execute(text("ALTER TABLE base ADD COLUMN hub_id INTEGER"))
 
+    if "position" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("position")}
+        with engine.begin() as conn:
+            if "loc_text" not in cols:
+                conn.execute(text("ALTER TABLE position ADD COLUMN loc_text VARCHAR"))
+
+    if "nexusconfig" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("nexusconfig")}
+        with engine.begin() as conn:
+            if "affiliation_id" not in cols:
+                conn.execute(text("ALTER TABLE nexusconfig ADD COLUMN affiliation_id INTEGER"))
+
 
