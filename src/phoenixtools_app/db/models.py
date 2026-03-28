@@ -34,6 +34,7 @@ class ItemType(SQLModel, table=True):
 class Item(SQLModel, table=True):
     id: int = Field(primary_key=True)
     name: str
+    mass: int = Field(default=0)
     item_type_id: int | None = Field(default=None, foreign_key="itemtype.id")
 
 
@@ -76,6 +77,7 @@ class CelestialBody(SQLModel, table=True):
 class Base(SQLModel, table=True):
     id: int = Field(primary_key=True)
     name: str | None = None
+    blacklist: bool = Field(default=False)
     docks: int | None = None
     hiports: int | None = None
     maintenance: int | None = None
@@ -125,6 +127,16 @@ class Path(SQLModel, table=True):
     from_id: int = Field(foreign_key="starsystem.id")
     to_id: int = Field(foreign_key="starsystem.id")
     tu_cost: int
+
+
+class TradeRoute(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    market_datum_id: int | None = Field(default=None, foreign_key="marketdatum.id")
+    from_id: int = Field(foreign_key="base.id")
+    to_id: int = Field(foreign_key="base.id")
+    item_id: int = Field(foreign_key="item.id")
+    path_id: int | None = Field(default=None, foreign_key="path.id")
+    barges_assigned: int = Field(default=0)
 
 
 class BaseItem(SQLModel, table=True):

@@ -25,6 +25,7 @@ from phoenixtools_app.services.hub_link import (
     sync_base_starbase_from_positions,
     upsert_bases_from_positions,
 )
+from phoenixtools_app.services.trade_routes import run_trade_route_generation
 
 
 ProgressCb = Callable[[str], None]
@@ -36,6 +37,7 @@ class MarketImportResult:
     items_touched: int
     buys: int
     sells: int
+    trade_routes: int
 
 
 def run_market_import(session: Session, *, progress: ProgressCb | None = None) -> MarketImportResult:
@@ -166,12 +168,17 @@ def run_market_import(session: Session, *, progress: ProgressCb | None = None) -
     sync_base_starbase_from_positions(session)
     link_outposts_to_hub(session)
 
+    log("Generating trade routes …")
+    n_routes = run_trade_route_generation(session)
+    log(f"Trade routes generated: {n_routes}.")
+
     log("Market import complete.")
     return MarketImportResult(
         bases=bases_count,
         items_touched=len(items_touched),
         buys=buys_count,
         sells=sells_count,
+        trade_routes=n_routes,
     )
 
 

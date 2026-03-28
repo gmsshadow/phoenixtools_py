@@ -5,13 +5,43 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
-from phoenixtools_app.db.models import JumpLink
+from phoenixtools_app.db.models import JumpLink, Path
 
 
 @dataclass(frozen=True)
 class PathResult:
     system_ids: list[int]
     tu_cost: int
+
+
+def path_requires_gate_keys(_path: Path) -> bool:
+    """Rails checks PathPoint stargates; jump-only paths have no path_points in this port."""
+    return False
+
+
+def find_quickest_path(session: Session, from_system_id: int, to_system_id: int) -> Path | None:
+    """
+    Rails `Path.find_quickest`: reuse stored `Path` row with lowest `tu_cost`, or compute via
+    jump links (Dijkstra) and persist a new row.
+    """
+    if from_system_id == to_system_id:
+        return None
+    existing = session.exec(
+        select(Path)
+        .where(Path.from_id == int(from_system_id))
+        .where(Path.to_id == int(to_system_id))
+        .order_by(Path.tu_cost)
+    ).first()
+    if existing is not None:
+        return existing
+    sp = shortest_path(session, from_system_id, to_system_id)
+    if sp is None:
+        return None
+    row = Path(from_id=int(from_system_id), to_id=int(to_system_id), tu_cost=int(sp.tu_cost))
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
 
 
 def shortest_path(session: Session, from_system_id: int, to_system_id: int) -> PathResult | None:

@@ -159,7 +159,7 @@ class HomePage(QWidget):
                 result = run_market_import(session, progress=self._append)
             self._append(
                 f"Imported market: {result.bases} bases, {result.items_touched} items touched, "
-                f"{result.buys} buys, {result.sells} sells."
+                f"{result.buys} buys, {result.sells} sells, {result.trade_routes} trade routes."
             )
         except Exception as e:
             QMessageBox.critical(self, "Daily refresh failed", str(e))
@@ -182,7 +182,8 @@ class HomePage(QWidget):
             )
             self._append(
                 f"Market: {result.market.bases} bases, {result.market.items_touched} items touched, "
-                f"{result.market.buys} buys, {result.market.sells} sells."
+                f"{result.market.buys} buys, {result.market.sells} sells, "
+                f"{result.market.trade_routes} trade routes."
             )
         except Exception as e:
             QMessageBox.critical(self, "Full refresh failed", str(e))

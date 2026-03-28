@@ -50,6 +50,8 @@ def _migrate_sqlite(engine) -> None:
                 conn.execute(text("ALTER TABLE base ADD COLUMN starbase INTEGER DEFAULT 1"))
             if "hub_id" not in cols:
                 conn.execute(text("ALTER TABLE base ADD COLUMN hub_id INTEGER"))
+            if "blacklist" not in cols:
+                conn.execute(text("ALTER TABLE base ADD COLUMN blacklist INTEGER DEFAULT 0"))
 
     if "position" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("position")}
@@ -62,5 +64,11 @@ def _migrate_sqlite(engine) -> None:
         with engine.begin() as conn:
             if "affiliation_id" not in cols:
                 conn.execute(text("ALTER TABLE nexusconfig ADD COLUMN affiliation_id INTEGER"))
+
+    if "item" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("item")}
+        with engine.begin() as conn:
+            if "mass" not in cols:
+                conn.execute(text("ALTER TABLE item ADD COLUMN mass INTEGER DEFAULT 0"))
 
 
