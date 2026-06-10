@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -50,6 +51,7 @@ class ItemsPage(QWidget):
 
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter by item name / ID …")
+        self.show_all = QCheckBox("Show all items (incl. unknown / not on any market)")
         self.refresh_btn = QPushButton("Refresh")
         self.fetch_one_btn = QPushButton("Fetch attributes for selection")
         self.fetch_missing_btn = QPushButton("Fetch all missing attributes")
@@ -61,9 +63,12 @@ class ItemsPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
 
         left_layout.addWidget(QLabel("<b>Items</b>"))
         left_layout.addWidget(self.filter)
+        left_layout.addWidget(self.show_all)
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.refresh_btn)
         btn_row.addWidget(self.fetch_one_btn)
@@ -75,6 +80,7 @@ class ItemsPage(QWidget):
 
         self.refresh_btn.clicked.connect(self._refresh)
         self.filter.textChanged.connect(self._apply_filter)
+        self.show_all.toggled.connect(self._apply_filter)
         self.fetch_one_btn.clicked.connect(self._fetch_selected)
         self.fetch_missing_btn.clicked.connect(self._fetch_missing)
 
@@ -89,32 +95,33 @@ class ItemsPage(QWidget):
     def _apply_filter(self) -> None:
         q = self.filter.text().strip().lower()
         rows = self._rows
+        if not self.show_all.isChecked():
+            rows = [r for r in rows if r.attributes_fetched or r.best_sell or r.best_buy]
         if q:
             rows = [
                 r
-                for r in self._rows
+                for r in rows
                 if q in r.name.lower() or q == str(r.item_id)
             ]
 
         self._filtered = rows
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             sell_base = self._base_name.get(r.best_sell[0], f"Base {r.best_sell[0]}") if r.best_sell else "—"
             buy_base = self._base_name.get(r.best_buy[0], f"Base {r.best_buy[0]}") if r.best_buy else "—"
-            sell_price = "" if r.best_sell is None else f"{r.best_sell[1]:.2f}"
-            buy_price = "" if r.best_buy is None else f"{r.best_buy[1]:.2f}"
-            spread = "" if r.spread is None else f"{r.spread:.2f}"
 
-            self.table.setItem(i, 0, _cell(str(r.item_id), align=Qt.AlignmentFlag.AlignRight))
+            self.table.setItem(i, 0, _num_cell(r.item_id))
             self.table.setItem(i, 1, _cell(r.name))
-            self.table.setItem(i, 2, _cell(str(r.mass), align=Qt.AlignmentFlag.AlignRight))
+            self.table.setItem(i, 2, _num_cell(r.mass))
             self.table.setItem(i, 3, _cell(r.type_name or "—"))
             self.table.setItem(i, 4, _cell("✓" if r.attributes_fetched else ""))
             self.table.setItem(i, 5, _cell(sell_base))
-            self.table.setItem(i, 6, _cell(sell_price, align=Qt.AlignmentFlag.AlignRight))
+            self.table.setItem(i, 6, _num_cell(None if r.best_sell is None else round(r.best_sell[1], 2)))
             self.table.setItem(i, 7, _cell(buy_base))
-            self.table.setItem(i, 8, _cell(buy_price, align=Qt.AlignmentFlag.AlignRight))
-            self.table.setItem(i, 9, _cell(spread, align=Qt.AlignmentFlag.AlignRight))
+            self.table.setItem(i, 8, _num_cell(None if r.best_buy is None else round(r.best_buy[1], 2)))
+            self.table.setItem(i, 9, _num_cell(None if r.spread is None else round(r.spread, 2)))
+        self.table.setSortingEnabled(True)
 
     def _selected_item_id(self) -> int | None:
         rows = {i.row() for i in self.table.selectedItems()}
@@ -231,6 +238,16 @@ def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetIt
     item = QTableWidgetItem(text)
     if align is not None:
         item.setTextAlignment(int(align))
+    item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+def _num_cell(value: int | float | None) -> QTableWidgetItem:
+    """Right-aligned cell that sorts numerically (empty cells sort last ascending)."""
+    item = QTableWidgetItem()
+    if value is not None:
+        item.setData(Qt.ItemDataRole.EditRole, value)
+    item.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
     return item
 
