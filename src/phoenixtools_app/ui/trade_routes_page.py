@@ -154,6 +154,10 @@ class TradeRoutesPage(QWidget):
         with make_session(self._engine) as session:
             self._routes = query_trade_routes(session, self._build_filter())
 
+        # Block selection signals while repopulating so the orders preview is
+        # always refreshed explicitly afterwards (selectRow(0) is a no-op
+        # signal-wise when row 0 was already selected).
+        self.table.blockSignals(True)
         self.table.setRowCount(len(self._routes))
         for r, tr in enumerate(self._routes):
             self.table.setItem(r, 0, _cell(tr.item_name))
@@ -172,6 +176,8 @@ class TradeRoutesPage(QWidget):
 
         if self._routes:
             self.table.selectRow(0)
+        self.table.blockSignals(False)
+        self._show_orders_preview()
 
     def _regenerate(self) -> None:
         try:

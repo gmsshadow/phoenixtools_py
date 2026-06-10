@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -20,7 +21,17 @@ from PySide6.QtWidgets import (
 from sqlmodel import Session, select
 
 from phoenixtools_app.db.engine import make_engine, make_session
-from phoenixtools_app.db.models import Base, BaseItem, BaseResource, CelestialBody, Item, ItemGroup, MassProduction, StarSystem
+from phoenixtools_app.db.models import (
+    Base,
+    BaseItem,
+    BaseResource,
+    CelestialBody,
+    Item,
+    ItemGroup,
+    MassProduction,
+    NexusConfig,
+    StarSystem,
+)
 from phoenixtools_app.services.base_reports import (
     competitive_buy_orders_text,
     competitive_buy_rows,
@@ -38,6 +49,7 @@ class BasesPage(QWidget):
         super().__init__()
         self._engine = make_engine()
         self._rows: list[tuple[Base, StarSystem | None, CelestialBody | None]] = []
+        self._my_affiliation_id: int | None = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -55,6 +67,8 @@ class BasesPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
 
         left_layout.addWidget(QLabel("<b>Bases</b>"))
         left_layout.addWidget(self.filter)
@@ -178,6 +192,8 @@ class BasesPage(QWidget):
             ["Item", "Res#", "Yield", "Drop", "Size", "Ore mines", "R.complex", "Output"]
         )
         self.resource_table.setAlternatingRowColors(True)
+        self.resource_table.setSortingEnabled(True)
+        self.resource_table.horizontalHeader().setSortIndicatorShown(True)
         res_layout.addWidget(self.resource_table, 1)
         self.tabs.addTab(res_tab, "Resources")
 
@@ -188,6 +204,8 @@ class BasesPage(QWidget):
         self.mass_table = QTableWidget(0, 4)
         self.mass_table.setHorizontalHeaderLabels(["Item", "Factories", "Carry", "Status"])
         self.mass_table.setAlternatingRowColors(True)
+        self.mass_table.setSortingEnabled(True)
+        self.mass_table.horizontalHeader().setSortIndicatorShown(True)
         mass_layout.addWidget(self.mass_table, 1)
         self.tabs.addTab(mass_tab, "Mass production")
 
@@ -260,7 +278,20 @@ class BasesPage(QWidget):
     def _refresh(self) -> None:
         with make_session(self._engine) as session:
             self._rows = _load_bases(session)
+            cfg = session.exec(select(NexusConfig)).first()
+            self._my_affiliation_id = (
+                int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
+            )
         self._apply_filter()
+
+    def _base_is_mine(self, b: Base) -> bool:
+        if b.affiliation_id is None:
+            return False
+        # If no affiliation is configured, any base with an affiliation set was
+        # created from our own positions, so treat it as ours.
+        if self._my_affiliation_id is None:
+            return True
+        return int(b.affiliation_id) == self._my_affiliation_id
 
     def _apply_filter(self) -> None:
         q = self.filter.text().strip().lower()
@@ -273,21 +304,27 @@ class BasesPage(QWidget):
                 or ((r[1].name if r[1] else "") or "").lower().find(q) >= 0
             ]
 
+        # Block selection signals while repopulating: otherwise row 0 can stay
+        # "selected" through the rebuild without itemSelectionChanged firing,
+        # leaving the detail pane showing a stale base.
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(filtered))
         for row_idx, (b, ss, cb) in enumerate(filtered):
-            self.table.setItem(row_idx, 0, _cell(str(b.id), align=Qt.AlignmentFlag.AlignRight))
+            self.table.setItem(row_idx, 0, _num_cell(int(b.id)))
             self.table.setItem(row_idx, 1, _cell(b.name or f"Base {b.id}"))
             self.table.setItem(row_idx, 2, _cell(ss.name if ss else "—"))
             self.table.setItem(row_idx, 3, _cell(cb.name if cb and cb.name else "—"))
-            self.table.setItem(row_idx, 4, _cell("" if b.docks is None else str(b.docks), align=Qt.AlignmentFlag.AlignRight))
-            self.table.setItem(
-                row_idx, 5, _cell("" if b.hiports is None else str(b.hiports), align=Qt.AlignmentFlag.AlignRight)
-            )
+            self.table.setItem(row_idx, 4, _num_cell(b.docks))
+            self.table.setItem(row_idx, 5, _num_cell(b.hiports))
+            if self._base_is_mine(b):
+                _highlight_row(self.table, row_idx)
+        self.table.setSortingEnabled(True)
 
         if filtered:
             self.table.selectRow(0)
-        else:
-            self._set_detail(None)
+        self.table.blockSignals(False)
+        self._show_detail()
 
     def _selected_row(self) -> tuple[Base, StarSystem | None, CelestialBody | None] | None:
         rows = {i.row() for i in self.table.selectedItems()}
@@ -475,19 +512,24 @@ class BasesPage(QWidget):
                 .order_by(BaseResource.resource_id)
             ).all()
 
+        self.resource_table.setSortingEnabled(False)
         self.resource_table.setRowCount(len(rows))
         for r, (br, item) in enumerate(rows):
             self.resource_table.setItem(r, 0, _cell(item.name))
-            self.resource_table.setItem(r, 1, _cell(str(br.resource_id), align=Qt.AlignmentFlag.AlignRight))
-            self.resource_table.setItem(r, 2, _cell(str(br.resource_yield), align=Qt.AlignmentFlag.AlignRight))
-            self.resource_table.setItem(r, 3, _cell(str(br.resource_drop), align=Qt.AlignmentFlag.AlignRight))
-            sz = "∞" if br.resource_size == -999 else str(br.resource_size)
-            self.resource_table.setItem(r, 4, _cell(sz, align=Qt.AlignmentFlag.AlignRight))
-            self.resource_table.setItem(r, 5, _cell(str(br.ore_mines), align=Qt.AlignmentFlag.AlignRight))
-            self.resource_table.setItem(r, 6, _cell(str(br.resource_complexes), align=Qt.AlignmentFlag.AlignRight))
+            self.resource_table.setItem(r, 1, _num_cell(br.resource_id))
+            self.resource_table.setItem(r, 2, _num_cell(br.resource_yield))
+            self.resource_table.setItem(r, 3, _num_cell(br.resource_drop))
+            if br.resource_size == -999:
+                # Infinite deposit: show ∞ but sort it above any finite size.
+                self.resource_table.setItem(r, 4, _sortable_cell("∞", 10**12, align=Qt.AlignmentFlag.AlignRight))
+            else:
+                self.resource_table.setItem(r, 4, _num_cell(br.resource_size))
+            self.resource_table.setItem(r, 5, _num_cell(br.ore_mines))
+            self.resource_table.setItem(r, 6, _num_cell(br.resource_complexes))
             self.resource_table.setItem(
-                r, 7, _cell("" if br.output is None else f"{br.output:.2f}", align=Qt.AlignmentFlag.AlignRight)
+                r, 7, _num_cell(None if br.output is None else round(float(br.output), 2))
             )
+        self.resource_table.setSortingEnabled(True)
 
     def _load_mass_tab(self, base_id: int) -> None:
         with make_session(self._engine) as session:
@@ -498,12 +540,14 @@ class BasesPage(QWidget):
                 .order_by(Item.name)
             ).all()
 
+        self.mass_table.setSortingEnabled(False)
         self.mass_table.setRowCount(len(rows))
         for r, (mp, item) in enumerate(rows):
             self.mass_table.setItem(r, 0, _cell(item.name))
-            self.mass_table.setItem(r, 1, _cell(str(mp.factories), align=Qt.AlignmentFlag.AlignRight))
-            self.mass_table.setItem(r, 2, _cell(str(mp.carry), align=Qt.AlignmentFlag.AlignRight))
+            self.mass_table.setItem(r, 1, _num_cell(mp.factories))
+            self.mass_table.setItem(r, 2, _num_cell(mp.carry))
             self.mass_table.setItem(r, 3, _cell(mp.status or "—"))
+        self.mass_table.setSortingEnabled(True)
 
     def _load_outposts_tab(self, hub_base_id: int) -> None:
         self._clear_outpost_widgets()
@@ -671,3 +715,49 @@ def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetIt
         item.setTextAlignment(int(align))
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
     return item
+
+
+def _num_cell(value: int | float | None) -> QTableWidgetItem:
+    """Right-aligned cell that sorts numerically (empty cells when value is None)."""
+    item = QTableWidgetItem()
+    if value is not None:
+        item.setData(Qt.ItemDataRole.EditRole, value)
+    item.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
+    item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+class _SortableItem(QTableWidgetItem):
+    """Cell with custom display text but an explicit numeric sort key (e.g. ∞)."""
+
+    def __init__(self, text: str, sort_key: float) -> None:
+        super().__init__(text)
+        self._sort_key = sort_key
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
+        other_key = other._sort_key if isinstance(other, _SortableItem) else other.data(Qt.ItemDataRole.EditRole)
+        try:
+            return float(self._sort_key) < float(other_key)
+        except (TypeError, ValueError):
+            return super().__lt__(other)
+
+
+def _sortable_cell(text: str, sort_key: float, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetItem:
+    item = _SortableItem(text, sort_key)
+    if align is not None:
+        item.setTextAlignment(int(align))
+    item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+_OWNED_BG = QBrush(QColor(46, 125, 50, 70))  # translucent green, works on light + dark themes
+
+
+def _highlight_row(table: QTableWidget, row: int) -> None:
+    bold = QFont()
+    bold.setBold(True)
+    for col in range(table.columnCount()):
+        cell = table.item(row, col)
+        if cell is not None:
+            cell.setBackground(_OWNED_BG)
+            cell.setFont(bold)

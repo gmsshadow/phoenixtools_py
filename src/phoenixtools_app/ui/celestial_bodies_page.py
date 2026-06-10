@@ -132,6 +132,10 @@ class CelestialBodiesPage(QWidget):
 
             rows = [(cb, ss) for (cb, ss) in self._rows if matches(cb, ss)]
 
+        # Block selection signals while repopulating so the detail pane is
+        # always refreshed explicitly afterwards (selectRow(0) is a no-op
+        # signal-wise when row 0 was already selected).
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
         for i, (cb, ss) in enumerate(rows):
             quad_ring = "—"
@@ -146,8 +150,8 @@ class CelestialBodiesPage(QWidget):
 
         if rows:
             self.table.selectRow(0)
-        else:
-            self._set_detail(None, None)
+        self.table.blockSignals(False)
+        self._show_detail()
 
     def _selected(self) -> tuple[CelestialBody, StarSystem | None] | None:
         rows = {i.row() for i in self.table.selectedItems()}

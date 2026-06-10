@@ -101,6 +101,10 @@ class StarSystemsPage(QWidget):
         if q:
             rows = [s for s in self._systems if q in s.name.lower() or q == str(s.id)]
 
+        # Block selection signals while repopulating so the detail pane is
+        # always refreshed explicitly afterwards (selectRow(0) is a no-op
+        # signal-wise when row 0 was already selected).
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
         for i, s in enumerate(rows):
             self.table.setItem(i, 0, _cell(str(s.id), align=Qt.AlignmentFlag.AlignRight))
@@ -108,8 +112,8 @@ class StarSystemsPage(QWidget):
 
         if rows:
             self.table.selectRow(0)
-        else:
-            self._set_detail(None)
+        self.table.blockSignals(False)
+        self._show_detail()
 
     def _selected_system_id(self) -> int | None:
         rows = {i.row() for i in self.table.selectedItems()}
