@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.db.models import Base, Item, ItemType, MarketBuy, MarketSell
 from phoenixtools_app.services.import_items import fetch_single_item, run_items_fetch_missing
+from phoenixtools_app.ui.background import run_job
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class ItemsPage(QWidget):
         self._engine = make_engine()
         self._rows: list[ItemRow] = []
         self._base_name: dict[int, str] = {}
+        self._job = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -144,17 +146,36 @@ class ItemsPage(QWidget):
             QMessageBox.critical(self, "Fetch failed", str(e))
 
     def _fetch_missing(self) -> None:
-        try:
-            with make_session(self._engine) as session:
-                result = run_items_fetch_missing(session)
-            QMessageBox.information(
-                self,
-                "Fetch complete",
-                f"Attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}.",
-            )
+        if self._job is not None:
+            QMessageBox.information(self, "Busy", "An item fetch is already running.")
+            return
+
+        self.fetch_missing_btn.setEnabled(False)
+        self.fetch_missing_btn.setText("Fetching …")
+
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                result = run_items_fetch_missing(session, progress=progress)
+            return f"Attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}."
+
+        def on_progress(msg: str) -> None:
+            self.fetch_missing_btn.setText(msg if len(msg) < 60 else msg[:57] + "…")
+
+        def on_done(summary: str) -> None:
+            self._job = None
+            self.fetch_missing_btn.setEnabled(True)
+            self.fetch_missing_btn.setText("Fetch all missing attributes")
+            QMessageBox.information(self, "Fetch complete", summary)
             self._refresh()
-        except Exception as e:
-            QMessageBox.critical(self, "Fetch failed", str(e))
+
+        def on_failed(err: str) -> None:
+            self._job = None
+            self.fetch_missing_btn.setEnabled(True)
+            self.fetch_missing_btn.setText("Fetch all missing attributes")
+            QMessageBox.critical(self, "Fetch failed", err)
+
+        self._job = run_job(self, job, on_progress=on_progress, on_done=on_done, on_failed=on_failed)
 
 
 def _load_item_rows(session: Session) -> list[ItemRow]:

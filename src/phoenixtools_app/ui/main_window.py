@@ -25,6 +25,7 @@ from phoenixtools_app.services.import_setup import run_setup_import
 from phoenixtools_app.services.import_items import run_items_fetch_missing
 from phoenixtools_app.services.import_market import run_market_import
 from phoenixtools_app.services.full_refresh import run_full_refresh
+from phoenixtools_app.ui.background import run_job
 from phoenixtools_app.ui.trade_routes_page import TradeRoutesPage
 from phoenixtools_app.ui.data_browser_page import DataBrowserPage
 from phoenixtools_app.ui.bases_page import BasesPage
@@ -108,6 +109,7 @@ class HomePage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._engine = make_engine()
+        self._job = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -156,56 +158,70 @@ class HomePage(QWidget):
             "</p>"
         )
 
+    def _set_busy(self, busy: bool) -> None:
+        for btn in (self.daily_btn, self.full_btn, self.items_btn):
+            btn.setEnabled(not busy)
+
+    def _start_job(self, start_msg: str, fn) -> None:
+        if self._job is not None:
+            QMessageBox.information(self, "Busy", "Another refresh is still running.")
+            return
+        self._append(start_msg)
+        self._set_busy(True)
+
+        def on_done(summary: str) -> None:
+            self._append(summary)
+            self._job = None
+            self._set_busy(False)
+            self._refresh_status()
+
+        def on_failed(err: str) -> None:
+            self._append(f"ERROR: {err}")
+            self._job = None
+            self._set_busy(False)
+            self._refresh_status()
+
+        self._job = run_job(self, fn, on_progress=self._append, on_done=on_done, on_failed=on_failed)
+
     def _daily_refresh(self) -> None:
-        self._append("Starting daily refresh (market) …")
-        try:
-            with make_session(self._engine) as session:
-                result = run_market_import(session, progress=self._append)
-            self._append(
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                result = run_market_import(session, progress=progress)
+            return (
                 f"Imported market: {result.bases} bases, {result.items_touched} items touched, "
                 f"{result.buys} buys, {result.sells} sells, {result.trade_routes} trade routes."
             )
-        except Exception as e:
-            QMessageBox.critical(self, "Daily refresh failed", str(e))
-            self._append(f"ERROR: {e}")
-        finally:
-            self._refresh_status()
+
+        self._start_job("Starting daily refresh (market) …", job)
 
     def _fetch_items(self) -> None:
-        self._append("Starting item attributes fetch (missing only) …")
-        try:
-            with make_session(self._engine) as session:
-                result = run_items_fetch_missing(session, progress=self._append)
-            self._append(
-                f"Item fetch: attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}."
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Item fetch failed", str(e))
-            self._append(f"ERROR: {e}")
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                result = run_items_fetch_missing(session, progress=progress)
+            return f"Item fetch: attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}."
+
+        self._start_job("Starting item attributes fetch (missing only) …", job)
 
     def _full_refresh(self) -> None:
-        self._append("Starting full refresh …")
-        try:
-            with make_session(self._engine) as session:
-                result = run_full_refresh(session, progress=self._append)
-            self._append(
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                result = run_full_refresh(session, progress=progress)
+            return (
                 f"Setup: {result.setup.item_types} item types, {result.setup.items} items, "
-                f"{result.setup.systems} systems, {result.setup.affiliations} affiliations, {result.setup.positions} positions."
-            )
-            self._append(f"Jump map: {result.jump_map.systems_touched} systems touched, {result.jump_map.links} links.")
-            self._append(
-                f"Cbodies: {result.cbodies.systems_processed} systems processed, {result.cbodies.cbodies_upserted} cbodies."
-            )
-            self._append(
+                f"{result.setup.systems} systems, {result.setup.affiliations} affiliations, "
+                f"{result.setup.positions} positions.\n"
+                f"Jump map: {result.jump_map.systems_touched} systems touched, {result.jump_map.links} links.\n"
+                f"Cbodies: {result.cbodies.systems_processed} systems processed, "
+                f"{result.cbodies.cbodies_upserted} cbodies.\n"
                 f"Market: {result.market.bases} bases, {result.market.items_touched} items touched, "
                 f"{result.market.buys} buys, {result.market.sells} sells, "
                 f"{result.market.trade_routes} trade routes."
             )
-        except Exception as e:
-            QMessageBox.critical(self, "Full refresh failed", str(e))
-            self._append(f"ERROR: {e}")
-        finally:
-            self._refresh_status()
+
+        self._start_job("Starting full refresh …", job)
 
 
 class ConfigurationPage(QWidget):
