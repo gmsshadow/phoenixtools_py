@@ -6,7 +6,9 @@ import httpx
 
 
 NEXUS_DOMAIN = "phoenixbse.com"
-INDEX_URL = f"http://{NEXUS_DOMAIN}/index.php"
+# Must be https: the site 301-redirects http, and clients drop POST bodies on
+# redirect, which silently breaks the login form submission.
+INDEX_URL = f"https://{NEXUS_DOMAIN}/index.php"
 
 
 @dataclass(frozen=True)
@@ -126,7 +128,7 @@ class NexusHtmlClient:
         if not url_path.startswith("/"):
             url_path = "/" + url_path
 
-        report = self._client.get(f"http://{NEXUS_DOMAIN}{url_path}")
+        report = self._client.get(f"https://{NEXUS_DOMAIN}{url_path}")
         report.raise_for_status()
         return report.text
 

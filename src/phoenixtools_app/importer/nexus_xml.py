@@ -7,7 +7,7 @@ import httpx
 
 NEXUS_DOMAIN = "phoenixbse.com"
 INDEX_PATH = "/index.php"
-XML_BASE = f"http://{NEXUS_DOMAIN}{INDEX_PATH}"
+XML_BASE = f"https://{NEXUS_DOMAIN}{INDEX_PATH}"
 
 
 @dataclass(frozen=True)

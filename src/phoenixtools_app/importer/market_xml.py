@@ -7,7 +7,7 @@ import httpx
 
 NEXUS_DOMAIN = "phoenixbse.com"
 INDEX_PATH = "/index.php"
-MARKET_XML_URL = f"http://{NEXUS_DOMAIN}{INDEX_PATH}?a=game&sa=markets&type=xml"
+MARKET_XML_URL = f"https://{NEXUS_DOMAIN}{INDEX_PATH}?a=game&sa=markets&type=xml"
 
 
 @dataclass(frozen=True)
