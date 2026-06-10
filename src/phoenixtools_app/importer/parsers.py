@@ -446,10 +446,23 @@ def _merge_base_resources_from_sections(sections: dict[str, list[list[str]]]) ->
         except (ValueError, IndexError):
             pass
 
-    merged: list[dict[str, object]] = []
-    merged.extend(mining.values())
-    merged.extend(resourcing.values())
-    return merged
+    # Rails appended both lists, duplicating deposits present in both the Mineral
+    # and Resource reports; merge them by resource id instead.
+    merged: dict[int, dict[str, object]] = dict(mining)
+    for rid, res in resourcing.items():
+        cur = merged.get(rid)
+        if cur is None:
+            merged[rid] = res
+            continue
+        cur["resource_complexes"] = res.get("resource_complexes", 0)
+        out_a = cur.get("output")
+        out_b = res.get("output")
+        if out_a is None:
+            cur["output"] = out_b
+        elif out_b is not None:
+            # both sources produce: total weekly output of the deposit
+            cur["output"] = float(out_a) + float(out_b)
+    return list(merged.values())
 
 
 @dataclass(frozen=True)

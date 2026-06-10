@@ -20,13 +20,21 @@ class ItemsFetchResult:
     failed: int
 
 
+def _parse_mass_value(val: str) -> int | None:
+    digits = "".join(ch for ch in val.split("mus")[0] if ch.isdigit())
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _apply_attribute_side_effects(session: Session, item: Item, key: str, val: str) -> None:
-    """Rails `set_item_attr_value!`: Mus -> mass, Name -> name, Type -> item_type."""
-    if key == "Mus":
-        try:
-            item.mass = int(val.replace("mus", "").strip() or 0)
-        except ValueError:
-            pass
+    """Rails `set_item_attr_value!`: mass / name / item_type. The site has renamed
+    the mass key from 'Mus' (Rails-era) to 'Mass Units (Mus)'."""
+    if key == "Mus" or key.startswith("Mass Units"):
+        mass = _parse_mass_value(val)
+        if mass is not None:
+            item.mass = mass
     elif key == "Name" and val:
         item.name = val
     elif key == "Type":
@@ -122,6 +130,29 @@ def fetch_single_item(session: Session, item_id: int, *, progress: ProgressCb | 
         return ok
     finally:
         client.close()
+
+
+def reapply_attribute_side_effects(session: Session) -> int:
+    """
+    Recompute mass / item_type / name for all items from already-stored attributes
+    (repair pass; no network). Returns number of items updated.
+    """
+    updated = 0
+    items = {int(i.id): i for i in session.exec(select(Item)).all()}
+    rows = session.exec(select(ItemAttribute)).all()
+    touched: set[int] = set()
+    for row in rows:
+        item = items.get(int(row.item_id))
+        if item is None:
+            continue
+        before = (item.mass, item.name, item.item_type_id)
+        _apply_attribute_side_effects(session, item, row.attr_key, row.attr_value)
+        if (item.mass, item.name, item.item_type_id) != before:
+            session.add(item)
+            touched.add(int(item.id))
+    session.commit()
+    updated = len(touched)
+    return updated
 
 
 def item_attr_value(session: Session, item_id: int, key: str) -> str | None:
