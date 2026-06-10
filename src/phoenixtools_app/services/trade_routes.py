@@ -17,7 +17,12 @@ from phoenixtools_app.db.models import (
     Path,
     TradeRoute,
 )
-from phoenixtools_app.services.pathing import find_quickest_path, path_requires_gate_keys, shortest_path
+from phoenixtools_app.services.pathing import (
+    find_quickest_path,
+    legs_to_orders,
+    path_requires_gate_keys,
+    shortest_path,
+)
 from phoenixtools_app.services.phoenix_order import PhoenixOrder
 
 # Rails TradeRoute
@@ -432,11 +437,10 @@ def orders_for_trade_route(session: Session, route_id: int) -> str:
     if path is None:
         lines.append("; ERROR: no path between systems")
         return "\n".join(lines)
+    if path.requires_gate_keys:
+        lines.append("; NOTE: route uses stargates (gate keys required)")
 
-    if len(path.system_ids) > 1:
-        orders.append(PhoenixOrder.move_to_random_jump_quad())
-    for sys_id in path.system_ids[1:]:
-        orders.append(PhoenixOrder.jump(int(sys_id)))
+    orders = legs_to_orders(path.legs, orders)
 
     if to_cbody_id is not None:
         orders.append(PhoenixOrder.move_to_planet(int(to_base.star_system_id), int(to_cbody_id)))

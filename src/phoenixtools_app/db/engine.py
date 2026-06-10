@@ -73,4 +73,10 @@ def _migrate_sqlite(engine) -> None:
             if "attributes_fetched" not in cols:
                 conn.execute(text("ALTER TABLE item ADD COLUMN attributes_fetched INTEGER DEFAULT 0"))
 
+    if "path" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("path")}
+        with engine.begin() as conn:
+            if "gate_keys" not in cols:
+                conn.execute(text("ALTER TABLE path ADD COLUMN gate_keys INTEGER DEFAULT 0"))
+
 

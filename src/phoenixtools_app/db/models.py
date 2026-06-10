@@ -135,6 +135,26 @@ class Path(SQLModel, table=True):
     from_id: int = Field(foreign_key="starsystem.id")
     to_id: int = Field(foreign_key="starsystem.id")
     tu_cost: int
+    gate_keys: bool = Field(default=False)
+
+
+class Stargate(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    star_system_id: int = Field(foreign_key="starsystem.id", index=True)
+    celestial_body_id: int | None = Field(default=None, foreign_key="celestialbody.id")
+
+
+class StargateRoute(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    from_id: int = Field(foreign_key="stargate.id", index=True)
+    to_id: int = Field(foreign_key="stargate.id")
+
+
+class Wormhole(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    star_system_id: int = Field(foreign_key="starsystem.id", index=True)
+    to_id: int = Field(foreign_key="starsystem.id")
+    celestial_body_id: int | None = Field(default=None, foreign_key="celestialbody.id")
 
 
 class TradeRoute(SQLModel, table=True):

@@ -42,6 +42,14 @@ class PhoenixOrder:
         return cls([3080, 1, star_system_id])
 
     @classmethod
+    def enter_stargate(cls, star_system_id: int, stargate_id: int = 0) -> "PhoenixOrder":
+        return cls([3090, 1, star_system_id, stargate_id])
+
+    @classmethod
+    def enter_wormhole(cls, cbody_id: int = 0) -> "PhoenixOrder":
+        return cls([3100, 1, cbody_id])
+
+    @classmethod
     def move_to_base(cls, starbase_id: int, dock: bool = False) -> "PhoenixOrder":
         return cls([3140, 1, starbase_id, cls._bool(dock)])
 

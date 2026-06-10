@@ -5,7 +5,7 @@ from typing import Callable
 
 from sqlmodel import Session, delete, select
 
-from phoenixtools_app.db.models import JumpLink, NexusConfig, Periphery, StarSystem
+from phoenixtools_app.db.models import JumpLink, NexusConfig, Path, Periphery, StarSystem
 from phoenixtools_app.importer.nexus_html import NexusHtmlClient, NexusHtmlConfig
 from phoenixtools_app.importer.parsers import parse_jump_map_html
 
@@ -56,8 +56,9 @@ def run_jump_map_import(session: Session, *, progress: ProgressCb | None = None)
             session.add(Periphery(id=pid, name=name))
     session.commit()
 
-    log("Clearing previous jump links …")
+    log("Clearing previous jump links + cached paths …")
     session.exec(delete(JumpLink))
+    session.exec(delete(Path))
     session.commit()
 
     client = NexusHtmlClient(NexusHtmlConfig(nexus_user=cfg.nexus_user, nexus_password=cfg.nexus_password))

@@ -11,6 +11,7 @@ from phoenixtools_app.services.import_market import MarketImportResult, run_mark
 from phoenixtools_app.services.import_setup import SetupResult, run_setup_import
 from phoenixtools_app.services.import_jump_map import JumpMapImportResult, run_jump_map_import
 from phoenixtools_app.services.import_cbodies import CbodiesImportResult, run_cbodies_import
+from phoenixtools_app.services.stargates import setup_known_stargates_and_wormholes
 
 
 ProgressCb = Callable[[str], None]
@@ -32,6 +33,7 @@ def run_full_refresh(session: Session, *, progress: ProgressCb | None = None) ->
     log("Full refresh started …")
     setup_result = run_setup_import(session, progress=progress)
     jump_map_result = run_jump_map_import(session, progress=progress)
+    setup_known_stargates_and_wormholes(session, progress=progress)
     cbodies_result = run_cbodies_import(session, progress=progress)
     market_result = run_market_import(session, progress=progress)
 

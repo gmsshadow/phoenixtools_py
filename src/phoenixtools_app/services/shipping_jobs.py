@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlmodel import Session, select
 
 from phoenixtools_app.db.models import Base, ItemGroup, StarSystem
-from phoenixtools_app.services.pathing import shortest_path
+from phoenixtools_app.services.pathing import legs_to_squad_orders, shortest_path
 from phoenixtools_app.services.phoenix_order import PhoenixOrder
 
 
@@ -66,10 +66,7 @@ def squadron_move_group_orders(
         if path is None:
             raise RuntimeError("No known jump-link path between source and destination systems.")
         orders += [PhoenixOrder.wait_for_tus(240), PhoenixOrder.squadron_start()]
-        if len(path.system_ids) > 1:
-            orders.append(PhoenixOrder.move_to_random_jump_quad())
-        for sid in path.system_ids[1:]:
-            orders.append(PhoenixOrder.jump(int(sid)))
+        orders = legs_to_squad_orders(path.legs, orders)
         orders.append(PhoenixOrder.move_to_base(int(dst.id)))
 
     orders += [

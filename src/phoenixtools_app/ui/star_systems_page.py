@@ -162,8 +162,13 @@ class StarSystemsPage(QWidget):
                 self.path_out.setPlainText("No path found.")
                 return
             names = {int(s.id): s.name for s in session.exec(select(StarSystem)).all()}
-            pretty = " -> ".join(names.get(i, str(i)) for i in result.system_ids)
-            self.path_out.setPlainText(f"TU cost: {result.tu_cost}\n{pretty}")
+            kinds = {"jump": "jump", "gate": "stargate", "wormhole": "wormhole"}
+            parts = [names.get(result.system_ids[0], str(result.system_ids[0]))]
+            for leg in result.legs:
+                parts.append(f"-[{kinds.get(leg.kind, leg.kind)}]-> {names.get(leg.to_system_id, str(leg.to_system_id))}")
+            pretty = " ".join(parts)
+            keys_note = "\nRequires stargate keys." if result.requires_gate_keys else ""
+            self.path_out.setPlainText(f"TU cost: {result.tu_cost}\n{pretty}{keys_note}")
 
 
 def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetItem:
