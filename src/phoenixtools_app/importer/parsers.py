@@ -620,6 +620,24 @@ def parse_turn_html(html_text: str) -> TurnData:
     )
 
 
+def parse_item_attributes_html(html_text: str) -> dict[str, str]:
+    """
+    Rails `Item#fetch_item_attributes!`: `td.data_field` cells alternate key / value.
+    Returns {} when the page has no data (e.g. session expired -> caller should re-login).
+    """
+    doc = lxml_html.fromstring(html_text)
+    values: dict[str, str] = {}
+    key: str | None = None
+    for n in doc.xpath('//td[@class="data_field"]'):
+        text = (n.text_content() or "").strip()
+        if key is None:
+            key = text
+        else:
+            values[key] = text
+            key = None
+    return values
+
+
 def _first_paren_int(s: str) -> int | None:
     if "(" not in s or ")" not in s:
         return None

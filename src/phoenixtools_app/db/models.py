@@ -36,6 +36,14 @@ class Item(SQLModel, table=True):
     name: str
     mass: int = Field(default=0)
     item_type_id: int | None = Field(default=None, foreign_key="itemtype.id")
+    attributes_fetched: bool = Field(default=False)
+
+
+class ItemAttribute(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    item_id: int = Field(foreign_key="item.id", index=True)
+    attr_key: str = Field(index=True)
+    attr_value: str = Field(default="")
 
 
 class Periphery(SQLModel, table=True):

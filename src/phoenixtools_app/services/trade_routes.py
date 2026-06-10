@@ -9,6 +9,7 @@ from phoenixtools_app.db.models import (
     Base,
     CelestialBody,
     Item,
+    ItemAttribute,
     ItemType,
     MarketBuy,
     MarketDatum,
@@ -98,8 +99,16 @@ def _item_personnel(session: Session, item: Item) -> bool:
     return tn in TYPE_PERSONNEL if tn else False
 
 
-def _item_lifeform_proxy(session: Session, item: Item) -> bool:
-    """Rails uses item_attributes 'Lifeform'; approximate with life item-type family."""
+def _item_lifeform(session: Session, item: Item) -> bool:
+    """Rails `Item#lifeform?`: attribute 'Lifeform' == "1"; fall back to life item-type family
+    when attributes haven't been fetched yet."""
+    attr = session.exec(
+        select(ItemAttribute)
+        .where(ItemAttribute.item_id == int(item.id))
+        .where(ItemAttribute.attr_key == "Lifeform")
+    ).first()
+    if attr is not None:
+        return attr.attr_value.strip() == "1"
     tn = _item_type_name(session, item)
     return tn in TYPE_LIFE if tn else False
 
@@ -264,11 +273,11 @@ def query_trade_routes(session: Session, f: TradeRouteFilter | None = None) -> l
                 continue
         if f.lifeform_mode == "only":
             item = session.get(Item, row.item_id) or Item(id=row.item_id, name="", mass=0)
-            if not _item_lifeform_proxy(session, item):
+            if not _item_lifeform(session, item):
                 continue
         elif f.lifeform_mode == "exclude":
             item = session.get(Item, row.item_id) or Item(id=row.item_id, name="", mass=0)
-            if _item_lifeform_proxy(session, item):
+            if _item_lifeform(session, item):
                 continue
         if f.no_keys:
             if row.requires_gate_keys:

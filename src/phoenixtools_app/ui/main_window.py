@@ -22,6 +22,7 @@ from sqlmodel import select
 from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.db.models import AppState, NexusConfig
 from phoenixtools_app.services.import_setup import run_setup_import
+from phoenixtools_app.services.import_items import run_items_fetch_missing
 from phoenixtools_app.services.import_market import run_market_import
 from phoenixtools_app.services.full_refresh import run_full_refresh
 from phoenixtools_app.ui.trade_routes_page import TradeRoutesPage
@@ -120,10 +121,12 @@ class HomePage(QWidget):
 
         self.daily_btn = QPushButton("Run daily refresh (market)")
         self.full_btn = QPushButton("Run full refresh")
+        self.items_btn = QPushButton("Fetch item data (missing attributes)")
 
         left_layout.addRow("Status", self.status)
         left_layout.addRow("", self.daily_btn)
         left_layout.addRow("", self.full_btn)
+        left_layout.addRow("", self.items_btn)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -133,6 +136,7 @@ class HomePage(QWidget):
 
         self.daily_btn.clicked.connect(self._daily_refresh)
         self.full_btn.clicked.connect(self._full_refresh)
+        self.items_btn.clicked.connect(self._fetch_items)
 
         self._refresh_status()
 
@@ -166,6 +170,18 @@ class HomePage(QWidget):
             self._append(f"ERROR: {e}")
         finally:
             self._refresh_status()
+
+    def _fetch_items(self) -> None:
+        self._append("Starting item attributes fetch (missing only) …")
+        try:
+            with make_session(self._engine) as session:
+                result = run_items_fetch_missing(session, progress=self._append)
+            self._append(
+                f"Item fetch: attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Item fetch failed", str(e))
+            self._append(f"ERROR: {e}")
 
     def _full_refresh(self) -> None:
         self._append("Starting full refresh …")

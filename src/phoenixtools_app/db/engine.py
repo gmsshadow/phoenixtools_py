@@ -70,5 +70,7 @@ def _migrate_sqlite(engine) -> None:
         with engine.begin() as conn:
             if "mass" not in cols:
                 conn.execute(text("ALTER TABLE item ADD COLUMN mass INTEGER DEFAULT 0"))
+            if "attributes_fetched" not in cols:
+                conn.execute(text("ALTER TABLE item ADD COLUMN attributes_fetched INTEGER DEFAULT 0"))
 
 
