@@ -24,7 +24,6 @@ def upsert_bases_from_positions(session: Session, *, default_affiliation_id: int
         if not _position_is_base_facility(pos.position_class):
             continue
         base = session.get(Base, int(pos.id))
-        created = base is None
         if base is None:
             base = Base(id=int(pos.id))
         if pos.name:
@@ -50,7 +49,9 @@ def upsert_bases_from_positions(session: Session, *, default_affiliation_id: int
             if cb_row is not None and cb_row.id is not None:
                 base.celestial_body_id = int(cb_row.id)
 
-        if created and default_affiliation_id is not None:
+        # Positions are our own holdings, so every base-facility position
+        # belongs to our affiliation (not just freshly-created ones).
+        if default_affiliation_id is not None:
             base.affiliation_id = int(default_affiliation_id)
 
         session.add(base)
