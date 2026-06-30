@@ -153,11 +153,12 @@ class MiningJobsPage(QWidget):
             self.jobs_table.setItem(r, 4, _num_cell(b.production))
             self.jobs_table.setItem(r, 5, _num_cell(b.consumption))
             self.jobs_table.setItem(r, 6, _num_cell(b.weekly_burn))
-            self.jobs_table.setItem(r, 7, _cell(_deposit_text(b.best_resource)))
+            is_warning = not forever and b.weeks_remaining is not None and b.weeks_remaining < threshold
+            self.jobs_table.setItem(r, 7, _cell(_balance_deposit_text(b.best_resource, is_warning)))
             self.jobs_table.setItem(
                 r, 8, _num_cell(b.best_resource.next_complex_output if b.best_resource else None)
             )
-            if not forever and b.weeks_remaining is not None and b.weeks_remaining < threshold:
+            if is_warning:
                 _highlight_row(self.jobs_table, r)
         self.jobs_table.setSortingEnabled(True)
 
@@ -185,6 +186,18 @@ def _deposit_text(c: ResourceCandidate | None) -> str:
     if c is None:
         return "— (rare ore, see below)"
     return f"{c.base_name} · res#{c.resource_id} (yield {c.resource_yield:g}, drop {c.resource_drop})"
+
+
+def _balance_deposit_text(c: ResourceCandidate | None, is_warning: bool) -> str:
+    """Deposit label for the full balance view.
+
+    Only items that are actually running low appear in the Rare ores table, so
+    'see below' is reserved for those; healthy items just note there is no
+    minable deposit in this hub's cluster.
+    """
+    if c is not None:
+        return f"{c.base_name} · res#{c.resource_id} (yield {c.resource_yield:g}, drop {c.resource_drop})"
+    return "— (rare ore, see below)" if is_warning else "— (no deposit in cluster)"
 
 
 def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetItem:
