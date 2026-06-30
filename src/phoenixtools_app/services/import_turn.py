@@ -22,6 +22,66 @@ class TurnImportResult:
     item_group_rows: int
 
 
+@dataclass(frozen=True)
+class BulkTurnImportResult:
+    bases_total: int
+    bases_ok: int
+    bases_failed: int
+    inventory_items: int
+    item_group_rows: int
+    errors: list[str]
+
+
+def _my_owned_bases(session: Session) -> list[Base]:
+    cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
+    my_aff = int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
+    bases = session.exec(select(Base)).all()
+    if my_aff is not None:
+        owned = [b for b in bases if b.affiliation_id is not None and int(b.affiliation_id) == my_aff]
+    else:
+        # No affiliation configured: bases with any affiliation were created from our own positions.
+        owned = [b for b in bases if b.affiliation_id is not None]
+    return sorted(owned, key=lambda b: (b.name or f"Base {b.id}").lower())
+
+
+def run_turn_import_for_my_bases(session: Session, *, progress: ProgressCb | None = None) -> BulkTurnImportResult:
+    """Run `run_turn_import` for every base in the configured affiliation, continuing past failures."""
+    def log(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    owned = _my_owned_bases(session)
+    if not owned:
+        log("No owned bases found (set your affiliation id in Configuration, or run setup import).")
+        return BulkTurnImportResult(0, 0, 0, 0, 0, [])
+
+    log(f"Importing turn data for {len(owned)} owned base(s) …")
+    ok = failed = inv = rows = 0
+    errors: list[str] = []
+    for idx, b in enumerate(owned, start=1):
+        label = b.name or f"Base {b.id}"
+        log(f"[{idx}/{len(owned)}] {label} ({b.id}) …")
+        try:
+            r = run_turn_import(session, int(b.id), progress=progress)
+            ok += 1
+            inv += r.inventory_items
+            rows += r.item_group_rows
+        except Exception as e:  # noqa: BLE001 - report per-base and keep going
+            failed += 1
+            errors.append(f"{label} ({b.id}): {e}")
+            log(f"  ERROR: {e}")
+
+    log(f"Turn data import finished: {ok} ok, {failed} failed.")
+    return BulkTurnImportResult(
+        bases_total=len(owned),
+        bases_ok=ok,
+        bases_failed=failed,
+        inventory_items=inv,
+        item_group_rows=rows,
+        errors=errors,
+    )
+
+
 def run_turn_import(session: Session, base_id: int, *, progress: ProgressCb | None = None) -> TurnImportResult:
     def log(msg: str) -> None:
         if progress:

@@ -24,6 +24,7 @@ from phoenixtools_app.db.models import AppState, NexusConfig
 from phoenixtools_app.services.import_setup import run_setup_import
 from phoenixtools_app.services.import_items import run_items_fetch_missing
 from phoenixtools_app.services.import_market import run_market_import
+from phoenixtools_app.services.import_turn import run_turn_import_for_my_bases
 from phoenixtools_app.services.full_refresh import run_full_refresh
 from phoenixtools_app.ui.background import run_job
 from phoenixtools_app.ui.trade_routes_page import TradeRoutesPage
@@ -152,11 +153,13 @@ class HomePage(QWidget):
         self.daily_btn = QPushButton("Run daily refresh (market)")
         self.full_btn = QPushButton("Run full refresh")
         self.items_btn = QPushButton("Fetch item data (missing attributes)")
+        self.turn_btn = QPushButton("Fetch turn data (my bases)")
 
         left_layout.addRow("Status", self.status)
         left_layout.addRow("", self.daily_btn)
         left_layout.addRow("", self.full_btn)
         left_layout.addRow("", self.items_btn)
+        left_layout.addRow("", self.turn_btn)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -167,6 +170,7 @@ class HomePage(QWidget):
         self.daily_btn.clicked.connect(self._daily_refresh)
         self.full_btn.clicked.connect(self._full_refresh)
         self.items_btn.clicked.connect(self._fetch_items)
+        self.turn_btn.clicked.connect(self._fetch_turns)
 
         self._refresh_status()
 
@@ -187,7 +191,7 @@ class HomePage(QWidget):
         )
 
     def _set_busy(self, busy: bool) -> None:
-        for btn in (self.daily_btn, self.full_btn, self.items_btn):
+        for btn in (self.daily_btn, self.full_btn, self.items_btn, self.turn_btn):
             btn.setEnabled(not busy)
 
     def _start_job(self, start_msg: str, fn) -> None:
@@ -231,6 +235,24 @@ class HomePage(QWidget):
             return f"Item fetch: attempted {result.attempted}, fetched {result.fetched}, failed {result.failed}."
 
         self._start_job("Starting item attributes fetch (missing only) …", job)
+
+    def _fetch_turns(self) -> None:
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                result = run_turn_import_for_my_bases(session, progress=progress)
+            summary = (
+                f"Turn data: {result.bases_ok}/{result.bases_total} bases imported, "
+                f"{result.bases_failed} failed. "
+                f"{result.item_group_rows} item-group rows, {result.inventory_items} inventory items."
+            )
+            if result.errors:
+                summary += "\nErrors:\n" + "\n".join(f"  - {e}" for e in result.errors[:20])
+                if len(result.errors) > 20:
+                    summary += f"\n  … and {len(result.errors) - 20} more."
+            return summary
+
+        self._start_job("Starting turn data fetch for my bases …", job)
 
     def _full_refresh(self) -> None:
         def job(progress) -> str:
