@@ -24,7 +24,9 @@ src/phoenixtools_app/services/import_jump_map.py
 src/phoenixtools_app/services/import_market.py
 src/phoenixtools_app/services/import_setup.py
 src/phoenixtools_app/services/import_turn.py
+src/phoenixtools_app/services/item_detail.py
 src/phoenixtools_app/services/mining_jobs.py
+src/phoenixtools_app/services/path_to_base.py
 src/phoenixtools_app/services/pathing.py
 src/phoenixtools_app/services/phoenix_order.py
 src/phoenixtools_app/services/shipping_jobs.py
@@ -37,5 +39,6 @@ src/phoenixtools_app/ui/data_browser_page.py
 src/phoenixtools_app/ui/items_page.py
 src/phoenixtools_app/ui/main_window.py
 src/phoenixtools_app/ui/mining_jobs_page.py
+src/phoenixtools_app/ui/path_to_base_page.py
 src/phoenixtools_app/ui/star_systems_page.py
 src/phoenixtools_app/ui/trade_routes_page.py

@@ -33,6 +33,7 @@ from phoenixtools_app.ui.items_page import ItemsPage
 from phoenixtools_app.ui.star_systems_page import StarSystemsPage
 from phoenixtools_app.ui.celestial_bodies_page import CelestialBodiesPage
 from phoenixtools_app.ui.mining_jobs_page import MiningJobsPage
+from phoenixtools_app.ui.path_to_base_page import PathToBasePage
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
             ("Trade routes", "Find routes + generate orders."),
             ("Bases", "Base reports, shipping jobs."),
             ("Mining jobs", "Depleting resources + rare ores."),
+            ("Path to base", "Shortest path + move/sell orders."),
             ("Star systems", "Systems + pathing."),
             ("Items", "Items + opportunities."),
             ("Celestial bodies", "Search + GPI planner."),
@@ -80,6 +82,8 @@ class MainWindow(QMainWindow):
                 self.pages.addWidget(BasesPage())
             elif title == "Mining jobs":
                 self.pages.addWidget(MiningJobsPage())
+            elif title == "Path to base":
+                self.pages.addWidget(PathToBasePage())
             elif title == "Items":
                 self.pages.addWidget(ItemsPage())
             elif title == "Star systems":
