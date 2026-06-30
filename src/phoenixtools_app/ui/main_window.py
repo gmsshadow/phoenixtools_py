@@ -24,7 +24,8 @@ from phoenixtools_app.db.models import AppState, NexusConfig
 from phoenixtools_app.services.import_setup import run_setup_import
 from phoenixtools_app.services.import_items import run_items_fetch_missing
 from phoenixtools_app.services.import_market import run_market_import
-from phoenixtools_app.services.import_turn import run_turn_import_for_my_bases
+from phoenixtools_app.services.import_turn import list_nexus_turns, run_turn_import_for_my_bases
+from phoenixtools_app.ui.nexus_turns_dialog import NexusTurnsDialog
 from phoenixtools_app.services.full_refresh import run_full_refresh
 from phoenixtools_app.ui.background import run_job
 from phoenixtools_app.ui.trade_routes_page import TradeRoutesPage
@@ -139,6 +140,7 @@ class HomePage(QWidget):
         super().__init__()
         self._engine = make_engine()
         self._job = None
+        self._turns_cache = []
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -154,12 +156,14 @@ class HomePage(QWidget):
         self.full_btn = QPushButton("Run full refresh")
         self.items_btn = QPushButton("Fetch item data (missing attributes)")
         self.turn_btn = QPushButton("Fetch turn data (my bases)")
+        self.turns_dialog_btn = QPushButton("Import Nexus turns (incl. shared)…")
 
         left_layout.addRow("Status", self.status)
         left_layout.addRow("", self.daily_btn)
         left_layout.addRow("", self.full_btn)
         left_layout.addRow("", self.items_btn)
         left_layout.addRow("", self.turn_btn)
+        left_layout.addRow("", self.turns_dialog_btn)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -171,6 +175,7 @@ class HomePage(QWidget):
         self.full_btn.clicked.connect(self._full_refresh)
         self.items_btn.clicked.connect(self._fetch_items)
         self.turn_btn.clicked.connect(self._fetch_turns)
+        self.turns_dialog_btn.clicked.connect(self._open_turns_dialog)
 
         self._refresh_status()
 
@@ -191,7 +196,7 @@ class HomePage(QWidget):
         )
 
     def _set_busy(self, busy: bool) -> None:
-        for btn in (self.daily_btn, self.full_btn, self.items_btn, self.turn_btn):
+        for btn in (self.daily_btn, self.full_btn, self.items_btn, self.turn_btn, self.turns_dialog_btn):
             btn.setEnabled(not busy)
 
     def _start_job(self, start_msg: str, fn) -> None:
@@ -253,6 +258,39 @@ class HomePage(QWidget):
             return summary
 
         self._start_job("Starting turn data fetch for my bases …", job)
+
+    def _open_turns_dialog(self) -> None:
+        if self._job is not None:
+            QMessageBox.information(self, "Busy", "Another refresh is still running.")
+            return
+        self._append("Fetching Nexus turns list (own + shared) …")
+        self._set_busy(True)
+
+        def job(progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                entries = list_nexus_turns(session, progress=progress)
+            self._turns_cache = entries
+            shared = sum(1 for e in entries if not e.owned)
+            return f"Found {len(entries)} turns ({shared} shared)."
+
+        def on_done(summary: str) -> None:
+            self._append(summary)
+            self._job = None
+            self._set_busy(False)
+            if not self._turns_cache:
+                QMessageBox.information(self, "No turns", "No turns were found in your Nexus turns list.")
+                return
+            NexusTurnsDialog(self._turns_cache, self).exec()
+            self._refresh_status()
+
+        def on_failed(err: str) -> None:
+            self._append(f"ERROR: {err}")
+            self._job = None
+            self._set_busy(False)
+            QMessageBox.critical(self, "Could not list turns", err)
+
+        self._job = run_job(self, job, on_progress=self._append, on_done=on_done, on_failed=on_failed)
 
     def _full_refresh(self) -> None:
         def job(progress) -> str:

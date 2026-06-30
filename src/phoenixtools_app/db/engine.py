@@ -52,6 +52,8 @@ def _migrate_sqlite(engine) -> None:
                 conn.execute(text("ALTER TABLE base ADD COLUMN hub_id INTEGER"))
             if "blacklist" not in cols:
                 conn.execute(text("ALTER TABLE base ADD COLUMN blacklist INTEGER DEFAULT 0"))
+            if "tracked" not in cols:
+                conn.execute(text("ALTER TABLE base ADD COLUMN tracked INTEGER DEFAULT 0"))
 
     if "position" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("position")}

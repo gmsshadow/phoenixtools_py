@@ -95,6 +95,8 @@ class Base(SQLModel, table=True):
     celestial_body_id: int | None = Field(default=None, foreign_key="celestialbody.id")
     starbase: bool = Field(default=True)
     hub_id: int | None = Field(default=None, foreign_key="base.id")
+    # True for turns we track from the Nexus turns list (own selections + shared turns).
+    tracked: bool = Field(default=False)
 
 
 class MarketDatum(SQLModel, table=True):

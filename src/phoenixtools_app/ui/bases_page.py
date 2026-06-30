@@ -285,6 +285,9 @@ class BasesPage(QWidget):
         self._apply_filter()
 
     def _base_is_mine(self, b: Base) -> bool:
+        # Tracked turns (own selections + shared turns imported from the Nexus) count as ours.
+        if bool(getattr(b, "tracked", False)):
+            return True
         if b.affiliation_id is None:
             return False
         # If no affiliation is configured, any base with an affiliation set was

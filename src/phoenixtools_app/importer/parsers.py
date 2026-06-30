@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from lxml import etree
@@ -473,6 +474,89 @@ class TurnData:
     item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
     mass_production: list[dict[str, object]] = field(default_factory=list)
     base_resources: list[dict[str, object]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TurnListEntry:
+    """One row from the Nexus turns list (`a=turns&sa=list`)."""
+
+    pos_id: int
+    name: str
+    token: str  # hash used to fetch the report via ?a=tf&c=turn&t=<token>
+    owned: bool  # True = your own turn; False = shared by another player
+    owner_name: str
+    owner_id: int
+    tus: int
+
+
+# ss_set_turn("<hash>","t_N",<pos>,<tus>,<owned bool>,"<owner>",<owner_id>)
+_SS_SET_TURN_RE = re.compile(
+    r'ss_set_turn\(\s*"([0-9a-fA-F]+)"\s*,\s*"[^"]*"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(true|false)\s*,\s*"([^"]*)"\s*,\s*(\d+)'
+)
+_NAME_ID_TAIL_RE = re.compile(r"^(.*?)\s*\((\d+)\)\s*$")
+_PAREN_ID_RE = re.compile(r"\(\s*(\d{1,7})\s*\)")
+
+
+def parse_turn_list(html_text: str) -> list[TurnListEntry]:
+    """Parse the logged-in turns list page into entries (own + shared turns)."""
+    doc = lxml_html.fromstring(html_text)
+    out: list[TurnListEntry] = []
+    seen: set[int] = set()
+    for a in doc.xpath('//a[contains(@onclick,"ss_set_turn")]'):
+        onclick = a.get("onclick") or ""
+        m = _SS_SET_TURN_RE.search(onclick)
+        if not m:
+            continue
+        token, pos, tus, owned, owner, owner_id = m.groups()
+        pid = int(pos)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        text = (a.text_content() or "").strip()
+        name = text
+        nm = _NAME_ID_TAIL_RE.match(text)
+        if nm:
+            name = nm.group(1).strip()
+        out.append(
+            TurnListEntry(
+                pos_id=pid,
+                name=name or f"Turn {pid}",
+                token=token,
+                owned=(owned == "true"),
+                owner_name=owner,
+                owner_id=int(owner_id),
+                tus=int(tus),
+            )
+        )
+    return out
+
+
+def parse_turn_location_ids(html_text: str) -> list[int]:
+    """
+    Best-effort: extract the parenthesised ids from a turn report's 'Starbase Location:' value
+    (e.g. cbody + system). The caller resolves which id is the star system / celestial body.
+    """
+    html_text = _unwrap_possible_xml_to_html(html_text)
+    head = html_text.lstrip()[:200].lower()
+    if head.startswith("<?xml") and "encoding" in head:
+        doc = lxml_html.fromstring(html_text.encode("utf-8", errors="ignore"))
+    else:
+        doc = lxml_html.fromstring(html_text)
+    for n in doc.xpath('//td[contains(text(),"Location")]'):
+        label = (n.text_content() or "").strip()
+        if "Location" not in label:
+            continue
+        chunk = label
+        sib = n.getnext()
+        steps = 0
+        while sib is not None and steps < 3:
+            chunk += " " + (sib.text_content() or "")
+            sib = sib.getnext()
+            steps += 1
+        ids = [int(x) for x in _PAREN_ID_RE.findall(chunk)]
+        if ids:
+            return ids
+    return []
 
 
 def _unwrap_possible_xml_to_html(payload: str) -> str:

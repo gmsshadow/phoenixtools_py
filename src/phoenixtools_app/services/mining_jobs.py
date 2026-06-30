@@ -220,10 +220,14 @@ def _my_base_ids(session: Session) -> list[int]:
     my_aff = int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
     bases = session.exec(select(Base)).all()
     if my_aff is not None:
-        return [int(b.id) for b in bases if b.affiliation_id is not None and int(b.affiliation_id) == my_aff]
+        return [
+            int(b.id)
+            for b in bases
+            if bool(getattr(b, "tracked", False)) or (b.affiliation_id is not None and int(b.affiliation_id) == my_aff)
+        ]
     # No affiliation configured: bases with any affiliation were created from
-    # our own positions, so treat them as ours.
-    return [int(b.id) for b in bases if b.affiliation_id is not None]
+    # our own positions, so treat them as ours (plus any tracked shared turns).
+    return [int(b.id) for b in bases if bool(getattr(b, "tracked", False)) or b.affiliation_id is not None]
 
 
 def _to_candidate(br: BaseResource, base_names: dict[int, str]) -> ResourceCandidate:
