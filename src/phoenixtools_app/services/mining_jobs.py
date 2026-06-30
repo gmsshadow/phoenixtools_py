@@ -73,9 +73,12 @@ def next_complex_output(br: BaseResource) -> int:
 def _min_week_yield_ok(br: BaseResource) -> bool:
     """Rails scope min_week_yields(5): resource_size >= yield * drop * 5.
 
-    Note: infinite deposits (size == -999) fail this check in Rails too;
-    kept identical for parity.
+    An infinite deposit is stored as size == -999. It trivially has enough to
+    last 5 weeks (it never runs out), so it must pass — Rails' literal
+    `size >= yield*drop*5` wrongly rejects it because -999 is a small number.
     """
+    if int(br.resource_size or 0) == -999:
+        return True
     return int(br.resource_size or 0) >= float(br.resource_yield or 0.0) * int(br.resource_drop or 0) * MIN_WEEK_YIELDS
 
 
