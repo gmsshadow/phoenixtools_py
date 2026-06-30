@@ -108,6 +108,32 @@ class PathToBasePage(QWidget):
 
         self._load_options()
 
+    def prefill(
+        self,
+        *,
+        destination_base_id: int,
+        sell_item_id: int | None = None,
+        start_system_id: int | None = None,
+    ) -> None:
+        """Set the form from another page (e.g. item detail's closest best buyer) and compute."""
+        def _select(combo: QComboBox, value: int | None) -> None:
+            idx = combo.findData(value)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        _select(self.destination, int(destination_base_id))
+        _select(self.start_system, int(start_system_id) if start_system_id is not None else None)
+        _select(self.start_base, None)
+        _select(self.sell_item, int(sell_item_id) if sell_item_id is not None else None)
+        self.sell_quantity.setValue(0)
+        self.squadron.setChecked(False)
+        if start_system_id is None:
+            self.summary.setText(
+                "Pick a <b>start system</b> or <b>start base</b>, then press "
+                "<i>Find path + build orders</i>."
+            )
+        else:
+            self._compute()
+
     def _load_options(self) -> None:
         with make_session(self._engine) as session:
             systems = session.exec(select(StarSystem).order_by(StarSystem.name)).all()

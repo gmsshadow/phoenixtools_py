@@ -34,6 +34,7 @@ from phoenixtools_app.ui.star_systems_page import StarSystemsPage
 from phoenixtools_app.ui.celestial_bodies_page import CelestialBodiesPage
 from phoenixtools_app.ui.mining_jobs_page import MiningJobsPage
 from phoenixtools_app.ui.path_to_base_page import PathToBasePage
+from phoenixtools_app.ui.shipping_jobs_page import ShippingJobsPage
 
 
 class MainWindow(QMainWindow):
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
             ("Trade routes", "Find routes + generate orders."),
             ("Bases", "Base reports, shipping jobs."),
             ("Mining jobs", "Depleting resources + rare ores."),
+            ("Shipping jobs", "Item groups by travel time."),
             ("Path to base", "Shortest path + move/sell orders."),
             ("Star systems", "Systems + pathing."),
             ("Items", "Items + opportunities."),
@@ -68,10 +70,15 @@ class MainWindow(QMainWindow):
             ("Data browser", "Raw data inspection."),
         ]
 
+        self._page_index: dict[str, int] = {}
+        self.path_to_base_page = PathToBasePage()
+        self.items_page = ItemsPage()
+
         for title, subtitle in items:
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, subtitle)
             self.nav.addItem(item)
+            self._page_index[title] = self.pages.count()
             if title == "Home":
                 self.pages.addWidget(HomePage())
             elif title == "Configuration":
@@ -82,10 +89,12 @@ class MainWindow(QMainWindow):
                 self.pages.addWidget(BasesPage())
             elif title == "Mining jobs":
                 self.pages.addWidget(MiningJobsPage())
+            elif title == "Shipping jobs":
+                self.pages.addWidget(ShippingJobsPage())
             elif title == "Path to base":
-                self.pages.addWidget(PathToBasePage())
+                self.pages.addWidget(self.path_to_base_page)
             elif title == "Items":
-                self.pages.addWidget(ItemsPage())
+                self.pages.addWidget(self.items_page)
             elif title == "Star systems":
                 self.pages.addWidget(StarSystemsPage())
             elif title == "Celestial bodies":
@@ -95,8 +104,19 @@ class MainWindow(QMainWindow):
             else:
                 self.pages.addWidget(_PlaceholderPage(title, subtitle))
 
+        self.items_page.request_path_to_base.connect(self._open_path_to_base)
+
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
+
+    def _open_path_to_base(self, destination_base_id: int, sell_item_id: int) -> None:
+        self.path_to_base_page.prefill(
+            destination_base_id=int(destination_base_id),
+            sell_item_id=int(sell_item_id) if sell_item_id else None,
+        )
+        idx = self._page_index.get("Path to base")
+        if idx is not None:
+            self.nav.setCurrentRow(idx)
 
         layout.addWidget(self.nav)
         layout.addWidget(self.pages, 1)

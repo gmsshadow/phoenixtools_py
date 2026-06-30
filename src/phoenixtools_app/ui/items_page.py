@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -40,11 +40,15 @@ class ItemRow:
 
 
 class ItemsPage(QWidget):
+    # (destination_base_id, sell_item_id) -> open Path to base for the closest best buyer.
+    request_path_to_base = Signal(int, int)
+
     def __init__(self) -> None:
         super().__init__()
         self._engine = make_engine()
         self._rows: list[ItemRow] = []
         self._base_name: dict[int, str] = {}
+        self._current_detail: ItemDetail | None = None
         self._job = None
 
         root = QHBoxLayout(self)
@@ -158,6 +162,10 @@ class ItemsPage(QWidget):
         self.d_buyers.setHorizontalHeaderLabels(["Base", "Location", "Qty", "Price"])
         self.d_buyers.setAlternatingRowColors(True)
         market_layout.addWidget(self.d_buyers, 1)
+        self.path_to_buyer_btn = QPushButton("Path to best buyer →")
+        self.path_to_buyer_btn.setEnabled(False)
+        self.path_to_buyer_btn.clicked.connect(self._open_path_to_best_buyer)
+        market_layout.addWidget(self.path_to_buyer_btn)
         tabs.addTab(market, "Market")
 
         # --- Production tab ---
@@ -231,6 +239,12 @@ class ItemsPage(QWidget):
         self._populate_detail(detail)
 
     def _populate_detail(self, d: ItemDetail | None) -> None:
+        self._current_detail = d
+        self.path_to_buyer_btn.setEnabled(bool(d and d.buyers))
+        if d and d.buyers:
+            self.path_to_buyer_btn.setText(f"Path to best buyer → {d.buyers[0].base_name}")
+        else:
+            self.path_to_buyer_btn.setText("Path to best buyer →")
         if d is None:
             self.detail_title.setText("<i>Select an item</i>")
             self.d_mass.setText("—")
@@ -319,6 +333,13 @@ class ItemsPage(QWidget):
             self.d_best.setItem(i, 2, _num_cell(round(c.resource_yield, 3)))
             self.d_best.setItem(i, 3, _num_cell(c.resource_drop))
             self.d_best.setItem(i, 4, _num_cell(c.next_complex_output))
+
+    def _open_path_to_best_buyer(self) -> None:
+        d = self._current_detail
+        if d is None or not d.buyers:
+            QMessageBox.information(self, "No buyer", "This item has no current buyers on the market.")
+            return
+        self.request_path_to_base.emit(int(d.buyers[0].base_id), int(d.item_id))
 
     def _selected_item_id(self) -> int | None:
         rows = {i.row() for i in self.table.selectedItems()}
