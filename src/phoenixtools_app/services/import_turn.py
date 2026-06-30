@@ -20,6 +20,7 @@ from phoenixtools_app.importer.nexus_html import NexusHtmlClient, NexusHtmlConfi
 from phoenixtools_app.importer.nexus_xml import NexusXmlClient, NexusXmlConfig
 from phoenixtools_app.importer.parsers import (
     TurnListEntry,
+    merge_turn_catalog,
     parse_pos_types,
     parse_turn_html,
     parse_turn_location_ids,
@@ -268,22 +269,28 @@ def _resolve_and_set_location(session: Session, base: Base, html_text: str) -> N
 
 
 def list_nexus_turns(session: Session, *, progress: ProgressCb | None = None) -> list[TurnListEntry]:
-    """List all turns visible on the Nexus (your own + turns shared with you), with position types."""
+    """List Nexus turns: personal list plus Find → External affiliation directory."""
     cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
     if not cfg or not cfg.nexus_user or not cfg.nexus_password:
         raise RuntimeError("Shared turns require a Nexus username/password in Configuration.")
     if progress:
-        progress("Fetching turns list from the Nexus …")
+        progress("Fetching personal turns list from the Nexus …")
     client = NexusHtmlClient(NexusHtmlConfig(nexus_user=cfg.nexus_user, nexus_password=cfg.nexus_password))
     try:
-        entries = client.list_turns()
+        personal = client.list_turns()
+        if progress:
+            progress("Fetching Find → External turn directory …")
+        external = client.list_external_turns()
+        entries = merge_turn_catalog(personal, external)
     finally:
         client.close()
 
-    # Enrich with position type (Starbase / Ship / Platform / …) from the XML pos_list.
+    # Enrich personal-list rows with position type from pos_list when missing.
     types = _position_types(cfg, progress)
     if types:
-        entries = [replace(e, position_type=types.get(e.pos_id)) for e in entries]
+        entries = [
+            replace(e, position_type=e.position_type or types.get(e.pos_id)) for e in entries
+        ]
     return entries
 
 
@@ -324,21 +331,36 @@ def run_turn_import_selected(
     imported = failed = inv = rows = 0
     errors: list[str] = []
     try:
-        log("Fetching turns list from the Nexus …")
-        by_id = {e.pos_id: e for e in client.list_turns()}
+        log("Fetching turn catalog from the Nexus …")
+        personal = client.list_turns()
+        external = client.list_external_turns()
+        by_id = {e.pos_id: e for e in merge_turn_catalog(personal, external)}
         for idx, pid in enumerate(wanted, start=1):
             entry = by_id.get(pid)
             if entry is None:
                 failed += 1
-                errors.append(f"Turn {pid}: not present in your Nexus turns list.")
+                errors.append(f"Turn {pid}: not found in Nexus turn catalog.")
                 continue
-            log(f"[{idx}/{len(wanted)}] {entry.name} ({pid}){'' if entry.owned else ' [shared]'} …")
+            tag = ""
+            if entry.source == "external" and not entry.on_personal_list:
+                tag = " [external]"
+            elif not entry.owned:
+                tag = " [shared]"
+            log(f"[{idx}/{len(wanted)}] {entry.name} ({pid}){tag} …")
             try:
-                html_text = client.get_turn_report(entry.token)
+                token = entry.token
+                if not token:
+                    resolved = client.resolve_turn_token(pid)
+                    token = resolved.token
+                html_text = client.get_turn_report(token)
                 parsed = parse_turn_html(html_text)
-                # The report header gives the type for shared turns too (not in pos_list).
                 header_type = parse_turn_position_type(html_text, pid) or entry.position_type
                 base = _ensure_tracked_base(session, entry, position_type=header_type)
+                if base.star_system_id is None and entry.system_id is not None:
+                    if session.get(StarSystem, int(entry.system_id)) is not None:
+                        base.star_system_id = int(entry.system_id)
+                        session.add(base)
+                        session.commit()
                 _resolve_and_set_location(session, base, html_text)
                 r = _store_turn(session, base, parsed)
                 imported += 1

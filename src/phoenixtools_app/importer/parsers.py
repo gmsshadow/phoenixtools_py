@@ -494,26 +494,32 @@ class TurnData:
 
 @dataclass(frozen=True)
 class TurnListEntry:
-    """One row from the Nexus turns list (`a=turns&sa=list`)."""
+    """One turn row from the Nexus (personal list and/or Find → External)."""
 
     pos_id: int
     name: str
-    token: str  # hash used to fetch the report via ?a=tf&c=turn&t=<token>
-    owned: bool  # True = your own turn; False = shared by another player
-    owner_name: str
-    owner_id: int
-    tus: int
-    position_type: str | None = None  # Starbase / Outpost / Ship / Platform / Political (if known)
+    token: str | None = None  # present on personal list; resolved at import for external-only
+    owned: bool = False  # True = your own turn on the personal list
+    owner_name: str = ""
+    owner_id: int = 0
+    tus: int = 0
+    position_type: str | None = None  # Starbase / Outpost / Ship / Platform / Political
+    source: str = "personal"  # personal | external
+    system_name: str | None = None
+    system_id: int | None = None
+    last_access: str | None = None
 
     BASE_TYPES = ("Starbase", "Outpost")
 
     @property
     def is_base(self) -> bool:
-        # Unknown type (e.g. shared turns not in our pos_list) is treated as base-like,
-        # since shared turns are almost always bases.
         if not self.position_type:
-            return True
+            return self.source == "external"
         return self.position_type in self.BASE_TYPES
+
+    @property
+    def on_personal_list(self) -> bool:
+        return self.source == "personal" or self.token is not None
 
 
 # ss_set_turn("<hash>","t_N",<pos>,<tus>,<owned bool>,"<owner>",<owner_id>)
@@ -553,9 +559,108 @@ def parse_turn_list(html_text: str) -> list[TurnListEntry]:
                 owner_name=owner,
                 owner_id=int(owner_id),
                 tus=int(tus),
+                source="personal",
             )
         )
     return out
+
+
+_FIND_LINK_RE = re.compile(r"\?a=turns&sa=list&la=find&id=(\d+)")
+_SYSTEM_HEAD_RE = re.compile(r"^(.*?)\s*\((\d+)\)\s*$")
+
+
+def parse_external_turns_find(html_text: str) -> list[TurnListEntry]:
+    """
+    Parse Turns → Find → External (`a=turns&sa=find`): affiliation turns grouped by system.
+    These do not need to be on your personal turns list to import.
+    """
+    doc = lxml_html.fromstring(html_text)
+    out: list[TurnListEntry] = []
+    seen: set[int] = set()
+    system_name: str | None = None
+    system_id: int | None = None
+
+    for el in doc.xpath("//div[contains(@class,'t_element')]"):
+        head = el.xpath(".//div[contains(@class,'t_c_n')]")
+        if head:
+            hm = _SYSTEM_HEAD_RE.match((head[0].text_content() or "").strip())
+            if hm:
+                system_name = hm.group(1).strip()
+                system_id = int(hm.group(2))
+
+        for row in el.xpath(".//div[contains(@class,'t_d_n2')]"):
+            link = row.xpath(".//a[contains(@href,'la=find&id=')]")
+            if not link:
+                continue
+            href = link[0].get("href") or ""
+            lm = _FIND_LINK_RE.search(href)
+            if not lm:
+                continue
+            pid = int(lm.group(1))
+            if pid in seen:
+                continue
+            seen.add(pid)
+
+            raw_name = (link[0].text_content() or "").strip()
+            name = raw_name
+            nm = _NAME_ID_TAIL_RE.match(raw_name)
+            if nm:
+                name = nm.group(1).strip()
+            # Strip leading affiliation tag (e.g. "BHD ").
+            name = re.sub(r"^[A-Z]{2,5}\s+", "", name).strip() or name
+
+            pos_type: str | None = None
+            last_access: str | None = None
+            for fr in row.xpath(".//div[contains(@class,'fr')]"):
+                txt = (fr.text_content() or "").strip()
+                if not txt:
+                    continue
+                if re.fullmatch(r"\d{2}/\d{2}/\d{2}", txt):
+                    last_access = txt
+                elif txt not in ("Positions",) and not txt.endswith(" Positions"):
+                    pos_type = txt
+
+            out.append(
+                TurnListEntry(
+                    pos_id=pid,
+                    name=name or f"Turn {pid}",
+                    owned=False,
+                    owner_name="External",
+                    position_type=pos_type,
+                    source="external",
+                    system_name=system_name,
+                    system_id=system_id,
+                    last_access=last_access,
+                )
+            )
+    return out
+
+
+def merge_turn_catalog(
+    personal: list[TurnListEntry], external: list[TurnListEntry]
+) -> list[TurnListEntry]:
+    """Merge personal turns list with Find → External; personal metadata wins on overlap."""
+    by_id: dict[int, TurnListEntry] = {e.pos_id: e for e in external}
+    for pe in personal:
+        ex = by_id.get(pe.pos_id)
+        if ex is None:
+            by_id[pe.pos_id] = pe
+            continue
+        by_id[pe.pos_id] = TurnListEntry(
+            pos_id=pe.pos_id,
+            name=pe.name or ex.name,
+            token=pe.token,
+            owned=pe.owned,
+            owner_name=pe.owner_name or ex.owner_name,
+            owner_id=pe.owner_id,
+            tus=pe.tus,
+            position_type=pe.position_type or ex.position_type,
+            source="personal",
+            system_name=ex.system_name,
+            system_id=ex.system_id,
+            last_access=ex.last_access,
+        )
+    return sorted(by_id.values(), key=lambda e: ((e.system_name or "").lower(), e.name.lower(), e.pos_id))
 
 
 def parse_turn_position_type(html_text: str, pos_id: int) -> str | None:

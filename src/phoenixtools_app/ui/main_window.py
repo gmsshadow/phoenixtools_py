@@ -156,7 +156,7 @@ class HomePage(QWidget):
         self.full_btn = QPushButton("Run full refresh")
         self.items_btn = QPushButton("Fetch item data (missing attributes)")
         self.turn_btn = QPushButton("Fetch turn data (my bases)")
-        self.turns_dialog_btn = QPushButton("Import Nexus turns (incl. shared)…")
+        self.turns_dialog_btn = QPushButton("Import Nexus turns (incl. External)…")
 
         left_layout.addRow("Status", self.status)
         left_layout.addRow("", self.daily_btn)
@@ -263,7 +263,7 @@ class HomePage(QWidget):
         if self._job is not None:
             QMessageBox.information(self, "Busy", "Another refresh is still running.")
             return
-        self._append("Fetching Nexus turns list (own + shared) …")
+        self._append("Fetching Nexus turn catalog (personal list + Find → External) …")
         self._set_busy(True)
 
         def job(progress) -> str:
@@ -271,15 +271,20 @@ class HomePage(QWidget):
             with make_session(engine) as session:
                 entries = list_nexus_turns(session, progress=progress)
             self._turns_cache = entries
-            shared = sum(1 for e in entries if not e.owned)
-            return f"Found {len(entries)} turns ({shared} shared)."
+            personal = sum(1 for e in entries if e.on_personal_list)
+            external_only = sum(1 for e in entries if e.source == "external" and not e.on_personal_list)
+            bases = sum(1 for e in entries if e.is_base)
+            return (
+                f"Found {len(entries)} turns ({personal} on personal list, "
+                f"{external_only} external-only, {bases} bases/outposts)."
+            )
 
         def on_done(summary: str) -> None:
             self._append(summary)
             self._job = None
             self._set_busy(False)
             if not self._turns_cache:
-                QMessageBox.information(self, "No turns", "No turns were found in your Nexus turns list.")
+                QMessageBox.information(self, "No turns", "No turns were found on the Nexus.")
                 return
             NexusTurnsDialog(self._turns_cache, self).exec()
             self._refresh_status()
