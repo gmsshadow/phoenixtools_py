@@ -266,11 +266,13 @@ class HomePage(QWidget):
         self._append("Fetching Nexus turn catalog (personal list + Find → External) …")
         self._set_busy(True)
 
+        pending: dict[str, list] = {"entries": []}
+
         def job(progress) -> str:
             engine = make_engine()
             with make_session(engine) as session:
                 entries = list_nexus_turns(session, progress=progress)
-            self._turns_cache = entries
+            pending["entries"] = entries
             personal = sum(1 for e in entries if e.on_personal_list)
             external_only = sum(1 for e in entries if e.source == "external" and not e.on_personal_list)
             bases = sum(1 for e in entries if e.is_base)
@@ -283,10 +285,12 @@ class HomePage(QWidget):
             self._append(summary)
             self._job = None
             self._set_busy(False)
-            if not self._turns_cache:
+            entries = pending["entries"]
+            self._turns_cache = entries
+            if not entries:
                 QMessageBox.information(self, "No turns", "No turns were found on the Nexus.")
                 return
-            NexusTurnsDialog(self._turns_cache, self).exec()
+            NexusTurnsDialog(entries, self).exec()
             self._refresh_status()
 
         def on_failed(err: str) -> None:

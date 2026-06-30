@@ -55,22 +55,23 @@ class NexusTurnsDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
 
         for r, e in enumerate(entries):
             chk = QTableWidgetItem()
             chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             chk.setCheckState(Qt.CheckState.Unchecked)
+            chk.setData(Qt.ItemDataRole.UserRole, int(e.pos_id))
             self.table.setItem(r, 0, chk)
-            self.table.setItem(r, 1, _ro(str(e.pos_id)))
-            self.table.setItem(r, 2, _ro(e.name))
-            self.table.setItem(r, 3, _ro(e.position_type or "—"))
+            self.table.setItem(r, 1, _ro(str(e.pos_id), int(e.pos_id)))
+            self.table.setItem(r, 2, _ro(e.name, int(e.pos_id)))
+            self.table.setItem(r, 3, _ro(e.position_type or "—", int(e.pos_id)))
             sys_text = e.system_name or "—"
             if e.system_id is not None and e.system_name:
                 sys_text = f"{e.system_name} ({e.system_id})"
-            self.table.setItem(r, 4, _ro(sys_text))
-            self.table.setItem(r, 5, _ro(_source_label(e)))
+            self.table.setItem(r, 4, _ro(sys_text, int(e.pos_id)))
+            self.table.setItem(r, 5, _ro(_source_label(e), int(e.pos_id)))
             owner = e.owner_name or "—"
             if e.owned:
                 owner = f"{owner} — Own"
@@ -78,7 +79,7 @@ class NexusTurnsDialog(QDialog):
                 owner = "Affiliation external"
             elif not e.owned:
                 owner = f"{owner} — Shared"
-            self.table.setItem(r, 6, _ro(owner))
+            self.table.setItem(r, 6, _ro(owner, int(e.pos_id)))
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
@@ -169,11 +170,15 @@ class NexusTurnsDialog(QDialog):
 
     def _checked_ids(self) -> list[int]:
         out: list[int] = []
-        for r, e in enumerate(self._entries):
+        for r in range(self.table.rowCount()):
             if self.table.isRowHidden(r):
                 continue
-            if self.table.item(r, 0).checkState() == Qt.CheckState.Checked:
-                out.append(int(e.pos_id))
+            chk = self.table.item(r, 0)
+            if chk is None or chk.checkState() != Qt.CheckState.Checked:
+                continue
+            pid = chk.data(Qt.ItemDataRole.UserRole)
+            if pid is not None:
+                out.append(int(pid))
         return out
 
     def _import_selected(self) -> None:
@@ -228,7 +233,8 @@ def _source_label(e: TurnListEntry) -> str:
     return "External"
 
 
-def _ro(text: str) -> QTableWidgetItem:
+def _ro(text: str, pos_id: int) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+    item.setData(Qt.ItemDataRole.UserRole, int(pos_id))
     return item
