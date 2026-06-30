@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -36,8 +37,12 @@ class NexusTurnsDialog(QDialog):
             )
         )
 
-        self.table = QTableWidget(len(entries), 4)
-        self.table.setHorizontalHeaderLabels(["Import", "Pos", "Name", "Owner / type"])
+        self.bases_only = QCheckBox("Bases only (hide ships / platforms / political positions)")
+        self.bases_only.setChecked(True)
+        layout.addWidget(self.bases_only)
+
+        self.table = QTableWidget(len(entries), 5)
+        self.table.setHorizontalHeaderLabels(["Import", "Pos", "Name", "Type", "Owner"])
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
@@ -50,11 +55,16 @@ class NexusTurnsDialog(QDialog):
             self.table.setItem(r, 0, chk)
             self.table.setItem(r, 1, _ro(str(e.pos_id)))
             self.table.setItem(r, 2, _ro(e.name))
+            type_text = e.position_type or ("?" if not e.owned else "—")
+            self.table.setItem(r, 3, _ro(type_text))
             kind = "Own" if e.owned else "Shared"
-            self.table.setItem(r, 3, _ro(f"{e.owner_name} — {kind}"))
+            self.table.setItem(r, 4, _ro(f"{e.owner_name} — {kind}"))
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
+
+        self.bases_only.toggled.connect(self._apply_type_filter)
+        self._apply_type_filter()
 
         sel_row = QHBoxLayout()
         self.select_all_btn = QPushButton("Select all")
@@ -83,13 +93,25 @@ class NexusTurnsDialog(QDialog):
         self.import_btn.clicked.connect(self._import_selected)
         self.close_btn.clicked.connect(self.reject)
 
+    def _apply_type_filter(self) -> None:
+        bases_only = self.bases_only.isChecked()
+        for r, e in enumerate(self._entries):
+            hidden = bases_only and not e.is_base
+            self.table.setRowHidden(r, hidden)
+            if hidden:
+                self.table.item(r, 0).setCheckState(Qt.CheckState.Unchecked)
+
     def _set_all(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         for r in range(self.table.rowCount()):
+            if self.table.isRowHidden(r):
+                continue
             self.table.item(r, 0).setCheckState(state)
 
     def _select_shared(self) -> None:
         for r, e in enumerate(self._entries):
+            if self.table.isRowHidden(r):
+                continue
             self.table.item(r, 0).setCheckState(
                 Qt.CheckState.Checked if not e.owned else Qt.CheckState.Unchecked
             )
@@ -97,6 +119,8 @@ class NexusTurnsDialog(QDialog):
     def _checked_ids(self) -> list[int]:
         out: list[int] = []
         for r, e in enumerate(self._entries):
+            if self.table.isRowHidden(r):
+                continue
             if self.table.item(r, 0).checkState() == Qt.CheckState.Checked:
                 out.append(int(e.pos_id))
         return out

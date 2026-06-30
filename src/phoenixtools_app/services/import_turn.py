@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from sqlmodel import Session, delete, select
@@ -18,7 +18,13 @@ from phoenixtools_app.db.models import (
 )
 from phoenixtools_app.importer.nexus_html import NexusHtmlClient, NexusHtmlConfig
 from phoenixtools_app.importer.nexus_xml import NexusXmlClient, NexusXmlConfig
-from phoenixtools_app.importer.parsers import TurnListEntry, parse_turn_html, parse_turn_location_ids
+from phoenixtools_app.importer.parsers import (
+    TurnListEntry,
+    parse_pos_types,
+    parse_turn_html,
+    parse_turn_location_ids,
+    parse_turn_position_type,
+)
 
 
 ProgressCb = Callable[[str], None]
@@ -262,7 +268,7 @@ def _resolve_and_set_location(session: Session, base: Base, html_text: str) -> N
 
 
 def list_nexus_turns(session: Session, *, progress: ProgressCb | None = None) -> list[TurnListEntry]:
-    """List all turns visible on the Nexus (your own + turns shared with you)."""
+    """List all turns visible on the Nexus (your own + turns shared with you), with position types."""
     cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
     if not cfg or not cfg.nexus_user or not cfg.nexus_password:
         raise RuntimeError("Shared turns require a Nexus username/password in Configuration.")
@@ -270,7 +276,27 @@ def list_nexus_turns(session: Session, *, progress: ProgressCb | None = None) ->
         progress("Fetching turns list from the Nexus …")
     client = NexusHtmlClient(NexusHtmlConfig(nexus_user=cfg.nexus_user, nexus_password=cfg.nexus_password))
     try:
-        return client.list_turns()
+        entries = client.list_turns()
+    finally:
+        client.close()
+
+    # Enrich with position type (Starbase / Ship / Platform / …) from the XML pos_list.
+    types = _position_types(cfg, progress)
+    if types:
+        entries = [replace(e, position_type=types.get(e.pos_id)) for e in entries]
+    return entries
+
+
+def _position_types(cfg: NexusConfig, progress: ProgressCb | None) -> dict[int, str]:
+    if not cfg.user_id or not cfg.xml_code:
+        return {}
+    if progress:
+        progress("Fetching position types (pos_list) …")
+    client = NexusXmlClient(NexusXmlConfig(user_id=int(cfg.user_id), xml_code=str(cfg.xml_code)))
+    try:
+        return parse_pos_types(client.fetch("pos_list"))
+    except Exception:  # noqa: BLE001 - type info is best-effort
+        return {}
     finally:
         client.close()
 
@@ -310,7 +336,9 @@ def run_turn_import_selected(
             try:
                 html_text = client.get_turn_report(entry.token)
                 parsed = parse_turn_html(html_text)
-                base = _ensure_tracked_base(session, entry)
+                # The report header gives the type for shared turns too (not in pos_list).
+                header_type = parse_turn_position_type(html_text, pid) or entry.position_type
+                base = _ensure_tracked_base(session, entry, position_type=header_type)
                 _resolve_and_set_location(session, base, html_text)
                 r = _store_turn(session, base, parsed)
                 imported += 1
@@ -334,13 +362,16 @@ def run_turn_import_selected(
     )
 
 
-def _ensure_tracked_base(session: Session, entry: TurnListEntry) -> Base:
+def _ensure_tracked_base(session: Session, entry: TurnListEntry, *, position_type: str | None = None) -> Base:
+    # position_type (from the report header) overrides the list type, and covers shared turns.
+    is_base = position_type in TurnListEntry.BASE_TYPES if position_type else entry.is_base
     base = session.get(Base, int(entry.pos_id))
     if base is None:
-        base = Base(id=int(entry.pos_id), name=entry.name, starbase=True, tracked=True)
+        base = Base(id=int(entry.pos_id), name=entry.name, starbase=is_base, tracked=True)
         session.add(base)
     else:
         base.tracked = True
+        base.starbase = is_base
         if not base.name and entry.name:
             base.name = entry.name
         session.add(base)

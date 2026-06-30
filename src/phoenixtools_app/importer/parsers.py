@@ -93,6 +93,22 @@ def parse_pos_list(xml_text: str) -> PositionData:
     return PositionData(positions=out)
 
 
+def parse_pos_types(xml_text: str) -> dict[int, str]:
+    """Map position id -> Nexus position `type` (Starbase, Outpost, Ship, Platform, Political, …)."""
+    root = etree.fromstring(xml_text.encode("utf-8", errors="ignore"))
+    out: dict[int, str] = {}
+    for pos in root.xpath("//positions/position"):
+        num = pos.get("num")
+        ptype = (pos.get("type") or "").strip()
+        if not num or not ptype:
+            continue
+        try:
+            out[int(num)] = ptype
+        except ValueError:
+            continue
+    return out
+
+
 def parse_position_loc_text(loc_str: str | None) -> ParsedPositionLocation:
     """
     Mirror Rails `NexusXMLClient#parse_location!` enough for Base star_system / cbody assignment.
@@ -487,6 +503,17 @@ class TurnListEntry:
     owner_name: str
     owner_id: int
     tus: int
+    position_type: str | None = None  # Starbase / Outpost / Ship / Platform / Political (if known)
+
+    BASE_TYPES = ("Starbase", "Outpost")
+
+    @property
+    def is_base(self) -> bool:
+        # Unknown type (e.g. shared turns not in our pos_list) is treated as base-like,
+        # since shared turns are almost always bases.
+        if not self.position_type:
+            return True
+        return self.position_type in self.BASE_TYPES
 
 
 # ss_set_turn("<hash>","t_N",<pos>,<tus>,<owned bool>,"<owner>",<owner_id>)
@@ -529,6 +556,30 @@ def parse_turn_list(html_text: str) -> list[TurnListEntry]:
             )
         )
     return out
+
+
+def parse_turn_position_type(html_text: str, pos_id: int) -> str | None:
+    """
+    From a turn report header like 'BHD OUTPOST Chapel of Primus/01-I (98287)', return the
+    title-cased position type ('Outpost', 'Starbase', 'Ship', 'Platform', 'Political', …).
+
+    Matches on the report's own position id so it isn't fooled by trade-log lines that also
+    begin with '<AFF> <TYPE> <ship name> (<other id>)'.
+    """
+    html_text = _unwrap_possible_xml_to_html(html_text)
+    head = html_text.lstrip()[:200].lower()
+    if head.startswith("<?xml") and "encoding" in head:
+        doc = lxml_html.fromstring(html_text.encode("utf-8", errors="ignore"))
+    else:
+        doc = lxml_html.fromstring(html_text)
+    text = doc.text_content() or ""
+    m = re.search(
+        r"\b([A-Z]{2,5})\s+([A-Z]+)\s+[^()\n]*?\(\s*" + re.escape(str(int(pos_id))) + r"\s*\)",
+        text,
+    )
+    if m:
+        return m.group(2).title()
+    return None
 
 
 def parse_turn_location_ids(html_text: str) -> list[int]:
