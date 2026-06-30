@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -14,8 +17,10 @@ from PySide6.QtWidgets import (
 from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.services.mining_jobs import (
     MiningJobsReport,
+    ResourceBalanceRow,
     ResourceCandidate,
     compute_mining_jobs,
+    compute_resource_balance,
 )
 
 
@@ -27,13 +32,25 @@ class MiningJobsPage(QWidget):
         root = QVBoxLayout(self)
 
         header = QHBoxLayout()
-        title = QLabel("<b>Mining jobs</b> — resources running out within 26 weeks across your hub bases.")
+        self.title = QLabel()
         self.refresh_btn = QPushButton("Refresh")
         self.status = QLabel("")
-        header.addWidget(title, 1)
+        header.addWidget(self.title, 1)
         header.addWidget(self.status)
         header.addWidget(self.refresh_btn)
         root.addLayout(header)
+
+        controls = QHBoxLayout()
+        self.show_all = QCheckBox("Show full resource balance (incl. healthy items)")
+        self.threshold = QSpinBox()
+        self.threshold.setRange(1, 9999)
+        self.threshold.setValue(26)
+        self.threshold.setSuffix(" weeks")
+        controls.addWidget(self.show_all)
+        controls.addStretch(1)
+        controls.addWidget(QLabel("Warn under:"))
+        controls.addWidget(self.threshold)
+        root.addLayout(controls)
 
         self.jobs_table = QTableWidget(0, 9)
         self.jobs_table.setHorizontalHeaderLabels(
@@ -73,22 +90,45 @@ class MiningJobsPage(QWidget):
         root.addWidget(self.rare_table, 2)
 
         self.refresh_btn.clicked.connect(self.refresh)
+        self.show_all.toggled.connect(self.refresh)
+        self.threshold.valueChanged.connect(self.refresh)
         self.refresh()
 
     def refresh(self) -> None:
+        threshold = int(self.threshold.value())
         with make_session(self._engine) as session:
-            report = compute_mining_jobs(session)
-        self._populate(report)
+            report = compute_mining_jobs(session, weeks_threshold=threshold)
+            balance = compute_resource_balance(session) if self.show_all.isChecked() else None
+        self._populate(report, balance)
 
-    def _populate(self, report: MiningJobsReport) -> None:
-        self.status.setText(
-            f"{report.hub_count} hub(s) · {len(report.jobs)} job(s) · {len(report.rare_ores)} rare ore(s)"
-        )
+    def _populate(self, report: MiningJobsReport, balance: list[ResourceBalanceRow] | None) -> None:
+        threshold = int(self.threshold.value())
+        if balance is not None:
+            self.title.setText(
+                "<b>Mining jobs</b> — full resource balance across your hub bases "
+                f"(items running out under {threshold} weeks are highlighted)."
+            )
+            depleting = sum(1 for b in balance if b.weeks_remaining is not None)
+            self.status.setText(
+                f"{report.hub_count} hub(s) · {len(balance)} material(s) · {depleting} net-depleting"
+            )
+            self._fill_jobs_table_from_balance(balance, threshold)
+        else:
+            self.title.setText(
+                f"<b>Mining jobs</b> — resources running out within {threshold} weeks across your hub bases."
+            )
+            self.status.setText(
+                f"{report.hub_count} hub(s) · {len(report.jobs)} job(s) · {len(report.rare_ores)} rare ore(s)"
+            )
+            self._fill_jobs_table_from_jobs(report)
 
+        self._fill_rare_table(report)
+
+    def _fill_jobs_table_from_jobs(self, report: MiningJobsReport) -> None:
         self.jobs_table.setSortingEnabled(False)
         self.jobs_table.setRowCount(len(report.jobs))
         for r, j in enumerate(report.jobs):
-            self.jobs_table.setItem(r, 0, _num_cell(j.weeks_remaining))
+            self.jobs_table.setItem(r, 0, _weeks_cell(j.weeks_remaining))
             self.jobs_table.setItem(r, 1, _cell(j.base_name))
             self.jobs_table.setItem(r, 2, _cell(j.item_name))
             self.jobs_table.setItem(r, 3, _num_cell(j.available))
@@ -101,6 +141,27 @@ class MiningJobsPage(QWidget):
             )
         self.jobs_table.setSortingEnabled(True)
 
+    def _fill_jobs_table_from_balance(self, balance: list[ResourceBalanceRow], threshold: int) -> None:
+        self.jobs_table.setSortingEnabled(False)
+        self.jobs_table.setRowCount(len(balance))
+        for r, b in enumerate(balance):
+            forever = b.weeks_remaining is None
+            self.jobs_table.setItem(r, 0, _weeks_cell(b.weeks_remaining))
+            self.jobs_table.setItem(r, 1, _cell(b.base_name))
+            self.jobs_table.setItem(r, 2, _cell(b.item_name))
+            self.jobs_table.setItem(r, 3, _num_cell(b.available))
+            self.jobs_table.setItem(r, 4, _num_cell(b.production))
+            self.jobs_table.setItem(r, 5, _num_cell(b.consumption))
+            self.jobs_table.setItem(r, 6, _num_cell(b.weekly_burn))
+            self.jobs_table.setItem(r, 7, _cell(_deposit_text(b.best_resource)))
+            self.jobs_table.setItem(
+                r, 8, _num_cell(b.best_resource.next_complex_output if b.best_resource else None)
+            )
+            if not forever and b.weeks_remaining is not None and b.weeks_remaining < threshold:
+                _highlight_row(self.jobs_table, r)
+        self.jobs_table.setSortingEnabled(True)
+
+    def _fill_rare_table(self, report: MiningJobsReport) -> None:
         rare_rows = [(ore, c) for ore in report.rare_ores for c in (ore.candidates or [None])]
         self.rare_table.setSortingEnabled(False)
         self.rare_table.setRowCount(len(rare_rows))
@@ -141,3 +202,36 @@ def _num_cell(value: int | float | None) -> QTableWidgetItem:
     item.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
     return item
+
+
+class _WeeksItem(QTableWidgetItem):
+    """Weeks-remaining cell: shows '∞' for non-depleting items but sorts as +inf."""
+
+    def __init__(self, weeks: int | None) -> None:
+        super().__init__()
+        self._key = float("inf") if weeks is None else float(weeks)
+        self.setText("∞" if weeks is None else str(weeks))
+        self.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
+        self.setFlags(self.flags() ^ Qt.ItemFlag.ItemIsEditable)
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
+        if isinstance(other, _WeeksItem):
+            return self._key < other._key
+        return super().__lt__(other)
+
+
+def _weeks_cell(weeks: int | None) -> _WeeksItem:
+    return _WeeksItem(weeks)
+
+
+_WARN_BG = QBrush(QColor(176, 96, 0, 90))  # translucent amber, readable on light + dark
+
+
+def _highlight_row(table: QTableWidget, row: int) -> None:
+    bold = QFont()
+    bold.setBold(True)
+    for col in range(table.columnCount()):
+        cell = table.item(row, col)
+        if cell is not None:
+            cell.setBackground(_WARN_BG)
+            cell.setFont(bold)

@@ -196,6 +196,22 @@ class MiningJobsReport:
     hub_count: int
 
 
+@dataclass(frozen=True)
+class ResourceBalanceRow:
+    """Full per-item production vs consumption for a hub (incl. healthy items)."""
+
+    base_id: int
+    base_name: str
+    item_id: int
+    item_name: str
+    available: int
+    production: int
+    consumption: int
+    weekly_burn: int  # consumption - production (negative = net surplus)
+    weeks_remaining: int | None  # None == 'Forever' (no net depletion)
+    best_resource: ResourceCandidate | None
+
+
 def _my_base_ids(session: Session) -> list[int]:
     cfg = session.exec(select(NexusConfig)).first()
     my_aff = int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
@@ -220,47 +236,83 @@ def _to_candidate(br: BaseResource, base_names: dict[int, str]) -> ResourceCandi
     )
 
 
-def compute_mining_jobs(session: Session) -> MiningJobsReport:
-    base_names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
-    item_names = {int(i.id): i.name for i in session.exec(select(Item)).all()}
-    my_ids = set(_my_base_ids(session))
+def _owned_hub_clusters(session: Session) -> list[tuple[int, set[int]]]:
+    """Owned hub base ids paired with their (hub + outposts) cluster.
 
+    Mirrors Rails: only hubs that actually have outposts are reported.
+    """
+    my_ids = set(_my_base_ids(session))
     outposts_by_hub: dict[int, list[int]] = {}
     for b in session.exec(select(Base).where(Base.hub_id.is_not(None))).all():  # type: ignore[union-attr]
         outposts_by_hub.setdefault(int(b.hub_id), []).append(int(b.id))
 
-    all_resources = session.exec(select(BaseResource)).all()
-    resources_by_base: dict[int, list[BaseResource]] = {}
-    for br in all_resources:
-        resources_by_base.setdefault(int(br.base_id), []).append(br)
+    out: list[tuple[int, set[int]]] = []
+    for hub_id in sorted(my_ids):
+        cluster = _cluster_base_ids(hub_id, outposts_by_hub)
+        if len(cluster) > 1:
+            out.append((hub_id, cluster))
+    return out
 
+
+def _hub_production_consumption(
+    session: Session,
+    hub_id: int,
+    cluster: set[int],
+    resources_by_base: dict[int, list[BaseResource]],
+) -> tuple[dict[int, float], dict[int, float]]:
+    # Production: current output per item across hub + outposts.
+    production: dict[int, float] = {}
+    for bid in cluster:
+        for br in resources_by_base.get(bid, []):
+            production[int(br.item_id)] = production.get(int(br.item_id), 0.0) + current_output(br)
+
+    # Consumption: raw materials of the hub's running mass production lines.
+    consumption: dict[int, float] = {}
+    for mp in session.exec(select(MassProduction).where(MassProduction.base_id == hub_id)).all():
+        mats = mp_raw_materials(session, mp)
+        if not mats:
+            continue
+        for iid, qty in mats.items():
+            consumption[iid] = consumption.get(iid, 0.0) + qty
+
+    return production, consumption
+
+
+def _resources_by_base(all_resources: list[BaseResource]) -> dict[int, list[BaseResource]]:
+    out: dict[int, list[BaseResource]] = {}
+    for br in all_resources:
+        out.setdefault(int(br.base_id), []).append(br)
+    return out
+
+
+def _best_cluster_deposit(
+    eligible: list[BaseResource],
+    cluster: set[int],
+    item_id: int,
+    base_names: dict[int, str],
+) -> ResourceCandidate | None:
+    local = [br for br in eligible if int(br.base_id) in cluster and int(br.item_id) == item_id]
+    if not local:
+        return None
+    local.sort(key=next_complex_output, reverse=True)
+    return _to_candidate(local[0], base_names)
+
+
+def compute_mining_jobs(session: Session, *, weeks_threshold: int = WEEKS_WARNING_THRESHOLD) -> MiningJobsReport:
+    base_names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
+    item_names = {int(i.id): i.name for i in session.exec(select(Item)).all()}
+
+    all_resources = session.exec(select(BaseResource)).all()
+    resources_by_base = _resources_by_base(all_resources)
     eligible = [br for br in all_resources if _min_week_yield_ok(br)]
+
+    clusters = _owned_hub_clusters(session)
 
     jobs: list[MiningJobRow] = []
     rare: dict[int, RareOreRow] = {}
-    hub_count = 0
 
-    for hub_id in sorted(my_ids):
-        # Rails only reports hubs that actually have outposts.
-        cluster = _cluster_base_ids(hub_id, outposts_by_hub)
-        if len(cluster) <= 1:
-            continue
-        hub_count += 1
-
-        # Production: sum of current output per item across hub + outposts.
-        production: dict[int, float] = {}
-        for bid in cluster:
-            for br in resources_by_base.get(bid, []):
-                production[int(br.item_id)] = production.get(int(br.item_id), 0.0) + current_output(br)
-
-        # Consumption: raw materials of the hub's running mass production lines.
-        consumption: dict[int, float] = {}
-        for mp in session.exec(select(MassProduction).where(MassProduction.base_id == hub_id)).all():
-            mats = mp_raw_materials(session, mp)
-            if not mats:
-                continue
-            for iid, qty in mats.items():
-                consumption[iid] = consumption.get(iid, 0.0) + qty
+    for hub_id, cluster in clusters:
+        production, consumption = _hub_production_consumption(session, hub_id, cluster, resources_by_base)
 
         for item_id, cons in consumption.items():
             if cons <= 0:
@@ -271,13 +323,10 @@ def compute_mining_jobs(session: Session) -> MiningJobsReport:
                 continue  # 'Forever' in Rails — never a mining job
             available = _count_item(session, hub_id, item_id)
             weeks_remaining = int(round(available / weekly_burn))
-            if weeks_remaining >= WEEKS_WARNING_THRESHOLD:
+            if weeks_remaining >= weeks_threshold:
                 continue
 
-            # Best replacement deposit within this hub's own cluster.
-            local = [br for br in eligible if int(br.base_id) in cluster and int(br.item_id) == item_id]
-            local.sort(key=next_complex_output, reverse=True)
-            best = _to_candidate(local[0], base_names) if local else None
+            best = _best_cluster_deposit(eligible, cluster, item_id, base_names)
 
             if best is not None:
                 jobs.append(
@@ -313,7 +362,53 @@ def compute_mining_jobs(session: Session) -> MiningJobsReport:
 
     jobs.sort(key=lambda j: j.weeks_remaining)
     rare_rows = sorted(rare.values(), key=lambda r: r.item_name.lower())
-    return MiningJobsReport(jobs=jobs, rare_ores=rare_rows, hub_count=hub_count)
+    return MiningJobsReport(jobs=jobs, rare_ores=rare_rows, hub_count=len(clusters))
+
+
+def compute_resource_balance(session: Session) -> list[ResourceBalanceRow]:
+    """Full production-vs-consumption for every item touched by an owned hub.
+
+    Unlike `compute_mining_jobs`, this keeps healthy items (weeks_remaining
+    is None == 'Forever') so you can see resource usage even when nothing is
+    running low.
+    """
+    base_names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
+    item_names = {int(i.id): i.name for i in session.exec(select(Item)).all()}
+
+    all_resources = session.exec(select(BaseResource)).all()
+    resources_by_base = _resources_by_base(all_resources)
+    eligible = [br for br in all_resources if _min_week_yield_ok(br)]
+
+    rows: list[ResourceBalanceRow] = []
+    for hub_id, cluster in _owned_hub_clusters(session):
+        production, consumption = _hub_production_consumption(session, hub_id, cluster, resources_by_base)
+
+        for item_id in sorted(set(production) | set(consumption)):
+            prod = production.get(item_id, 0.0)
+            cons = consumption.get(item_id, 0.0)
+            if prod <= 0 and cons <= 0:
+                continue
+            weekly_burn = int(round(cons - prod))
+            available = _count_item(session, hub_id, item_id)
+            weeks_remaining = int(round(available / weekly_burn)) if weekly_burn > 0 else None
+            rows.append(
+                ResourceBalanceRow(
+                    base_id=hub_id,
+                    base_name=base_names.get(hub_id, f"Base {hub_id}"),
+                    item_id=item_id,
+                    item_name=item_names.get(item_id, f"Item {item_id}"),
+                    available=available,
+                    production=int(round(prod)),
+                    consumption=int(round(cons)),
+                    weekly_burn=weekly_burn,
+                    weeks_remaining=weeks_remaining,
+                    best_resource=_best_cluster_deposit(eligible, cluster, item_id, base_names),
+                )
+            )
+
+    # Most urgent first; 'Forever' (None) last.
+    rows.sort(key=lambda r: (r.weeks_remaining is None, r.weeks_remaining or 0, -r.consumption))
+    return rows
 
 
 def _cluster_base_ids(hub_id: int, outposts_by_hub: dict[int, list[int]]) -> set[int]:
