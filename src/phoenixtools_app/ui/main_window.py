@@ -110,6 +110,10 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
 
+        layout.addWidget(self.nav)
+        layout.addWidget(self.pages, 1)
+        self.setCentralWidget(root)
+
     def _open_path_to_base(self, destination_base_id: int, sell_item_id: int) -> None:
         self.path_to_base_page.prefill(
             destination_base_id=int(destination_base_id),
@@ -118,10 +122,6 @@ class MainWindow(QMainWindow):
         idx = self._page_index.get("Path to base")
         if idx is not None:
             self.nav.setCurrentRow(idx)
-
-        layout.addWidget(self.nav)
-        layout.addWidget(self.pages, 1)
-        self.setCentralWidget(root)
 
 
 class _PlaceholderPage(QWidget):
