@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 
 from sqlmodel import Session, select
 
@@ -101,11 +102,22 @@ class ItemTradeProfile:
 
 def item_trade_profile(session: Session, item: Item) -> ItemTradeProfile:
     attrs = _attr_map(session, int(item.id))
+    return _profile_from_attrs(item, attrs, session)
+
+
+def _profile_from_attrs(
+    item: Item,
+    attrs: dict[str, str],
+    star_systems: dict[int, StarSystem] | Session,
+) -> ItemTradeProfile:
     origin_system_id = _parse_id_from_parens(attrs.get("Origin System"))
     origin_cbody_id = _parse_id_from_parens(attrs.get("Origin Celestial Body"))
     origin_periphery_id: int | None = None
     if origin_system_id is not None:
-        ss = session.get(StarSystem, int(origin_system_id))
+        if isinstance(star_systems, Session):
+            ss = star_systems.get(StarSystem, int(origin_system_id))
+        else:
+            ss = star_systems.get(int(origin_system_id))
         if ss and ss.periphery_id is not None:
             origin_periphery_id = int(ss.periphery_id)
     return ItemTradeProfile(
@@ -388,14 +400,335 @@ def competitive_buy_price_ok(
 
 
 def sellable_items(session: Session) -> list[tuple[Item, ItemTradeProfile]]:
+    return _load_sellable_items(session)
+
+
+def _load_sellable_items(session: Session) -> list[tuple[Item, ItemTradeProfile]]:
     type_rows = session.exec(select(ItemAttribute).where(ItemAttribute.attr_key == "Type")).all()
-    by_item: dict[int, str] = {int(r.item_id): r.attr_value for r in type_rows if r.attr_value in SELLABLE_TYPES}
+    sellable_ids = sorted(
+        {
+            int(r.item_id)
+            for r in type_rows
+            if r.attr_value in SELLABLE_TYPES and r.item_id is not None
+        }
+    )
+    if not sellable_ids:
+        return []
+
+    items = {
+        int(item.id): item
+        for item in session.exec(select(Item).where(Item.id.in_(sellable_ids))).all()
+        if item.id is not None
+    }
+    attr_rows = session.exec(
+        select(ItemAttribute).where(ItemAttribute.item_id.in_(sellable_ids))
+    ).all()
+    attrs_by_item: dict[int, dict[str, str]] = defaultdict(dict)
+    system_ids: set[int] = set()
+    for row in attr_rows:
+        if row.item_id is None:
+            continue
+        iid = int(row.item_id)
+        attrs_by_item[iid][row.attr_key] = row.attr_value
+        if row.attr_key == "Origin System":
+            sid = _parse_id_from_parens(row.attr_value)
+            if sid is not None:
+                system_ids.add(sid)
+
+    star_systems: dict[int, StarSystem] = {}
+    if system_ids:
+        star_systems = {
+            int(ss.id): ss
+            for ss in session.exec(select(StarSystem).where(StarSystem.id.in_(system_ids))).all()
+            if ss.id is not None
+        }
+
     out: list[tuple[Item, ItemTradeProfile]] = []
-    for item_id in sorted(by_item):
-        item = session.get(Item, int(item_id))
+    for item_id in sellable_ids:
+        item = items.get(item_id)
         if item is None:
             continue
-        profile = item_trade_profile(session, item)
+        profile = _profile_from_attrs(item, attrs_by_item.get(item_id, {}), star_systems)
         if profile.sellable():
             out.append((item, profile))
     return out
+
+
+@dataclass
+class _MarketSnapshot:
+    md_id: int
+    best_buys: dict[int, MarketBuy]
+    best_sells: dict[int, MarketSell]
+    base_selling: set[int]
+
+    @classmethod
+    def load(cls, session: Session, md_id: int, base_id: int) -> _MarketSnapshot:
+        buys = session.exec(select(MarketBuy).where(MarketBuy.market_datum_id == md_id)).all()
+        sells = session.exec(select(MarketSell).where(MarketSell.market_datum_id == md_id)).all()
+        best_buys: dict[int, MarketBuy] = {}
+        for buy in buys:
+            if buy.item_id is None:
+                continue
+            iid = int(buy.item_id)
+            prev = best_buys.get(iid)
+            if prev is None or float(buy.price) > float(prev.price):
+                best_buys[iid] = buy
+        best_sells: dict[int, MarketSell] = {}
+        for sell in sells:
+            if sell.item_id is None:
+                continue
+            iid = int(sell.item_id)
+            prev = best_sells.get(iid)
+            if prev is None or float(sell.price) < float(prev.price):
+                best_sells[iid] = sell
+        base_selling = {
+            int(sell.item_id)
+            for sell in sells
+            if sell.item_id is not None and int(sell.base_id) == int(base_id)
+        }
+        return cls(md_id=md_id, best_buys=best_buys, best_sells=best_sells, base_selling=base_selling)
+
+    def best_for_item(self, item_id: int) -> tuple[MarketBuy | None, MarketSell | None]:
+        iid = int(item_id)
+        return self.best_buys.get(iid), self.best_sells.get(iid)
+
+    def is_selling(self, item_id: int) -> bool:
+        return int(item_id) in self.base_selling
+
+
+@dataclass
+class CompetitiveCalc:
+    """Preloaded context for competitive-buy calculations (avoids per-item DB queries)."""
+
+    base: Base
+    snapshot: _MarketSnapshot
+    sellable: list[tuple[Item, ItemTradeProfile]]
+    base_periphery_id: int | None
+    base_cbody_game_id: int | None
+    _local_prices: dict[int, float] = field(default_factory=dict)
+    _brackets: dict[int, str] = field(default_factory=dict)
+    _tier_totals: dict[tuple[str, str], float] = field(default_factory=dict)
+
+    def local_price(self, profile: ItemTradeProfile) -> float:
+        cached = self._local_prices.get(profile.item_id)
+        if cached is not None:
+            return cached
+        if self.base.trade_good_value_per_mu is None or profile.source_value is None:
+            self._local_prices[profile.item_id] = 0.0
+            return 0.0
+        race_multiplier = 1.0
+        if (
+            self.base.race
+            and profile.race
+            and self.base.race not in ("Sentient",)
+            and profile.race not in ("Sentient",)
+            and self.base.race == profile.race
+        ):
+            race_multiplier = 2.0
+        if profile.trade_good():
+            planetary = float(self.base.trade_good_value_per_mu or 0)
+        elif profile.life_good():
+            planetary = float(self.base.life_good_value_per_mu or 0)
+        elif profile.drug():
+            planetary = float(self.base.drug_value_per_mu or 0)
+        else:
+            self._local_prices[profile.item_id] = 0.0
+            return 0.0
+        dm = self._distance_multiplier(profile)
+        if dm <= 0 or planetary <= 0:
+            self._local_prices[profile.item_id] = 0.0
+            return 0.0
+        price = round(dm * float(profile.source_value) * planetary * race_multiplier, 2)
+        self._local_prices[profile.item_id] = price
+        return price
+
+    def _distance_multiplier(self, profile: ItemTradeProfile) -> int:
+        if profile.origin_system_id is None or self.base.star_system_id is None:
+            return 0
+        if int(profile.origin_system_id) == int(self.base.star_system_id):
+            if profile.origin_cbody_id is not None and self.base_cbody_game_id is not None:
+                if int(profile.origin_cbody_id) != int(self.base_cbody_game_id):
+                    return 3
+            return 1
+        # Cross-system: profile carries origin periphery; base side uses cached periphery.
+        if profile.origin_periphery_id is None or self.base_periphery_id is None:
+            return 0
+        return trade_distance_modifier(self.base_periphery_id, profile.origin_periphery_id)
+
+    def _tier_thresholds(self, profile: ItemTradeProfile) -> tuple[float | None, float | None]:
+        if profile.trade_good():
+            return self.base.trade_good_low_value, self.base.trade_good_high_value
+        if profile.life_good():
+            return self.base.life_good_low_value, self.base.life_good_high_value
+        if profile.drug():
+            return self.base.drug_low_value, self.base.drug_high_value
+        return None, None
+
+    def market_bracket(self, profile: ItemTradeProfile) -> str:
+        cached = self._brackets.get(profile.item_id)
+        if cached is not None:
+            return cached
+        price = self.local_price(profile)
+        if price <= 0:
+            bracket = "M"
+        else:
+            low, high = self._tier_thresholds(profile)
+            if high is not None and price >= float(high):
+                bracket = "H"
+            elif low is not None and price <= float(low):
+                bracket = "L"
+            else:
+                bracket = "M"
+        self._brackets[profile.item_id] = bracket
+        return bracket
+
+    def recommended_buy_price(self, profile: ItemTradeProfile) -> float:
+        lp = self.local_price(profile)
+        if lp <= 0:
+            return 0.0
+        bracket = self.market_bracket(profile)
+        if bracket == "H":
+            return round(lp * 0.6, 2)
+        if bracket == "M":
+            return round(lp * 0.8, 2)
+        return round(lp * 0.7, 2)
+
+    def recommended_buy_volume(self, profile: ItemTradeProfile) -> int:
+        if not (profile.life_good() or profile.trade_good()):
+            return 0
+        if self.local_price(profile) <= 0:
+            return 0
+        bracket = self.market_bracket(profile)
+        if profile.trade_good():
+            if bracket == "H":
+                return 5000
+            if bracket == "M":
+                return 25000
+            return 100000
+        if profile.life_good():
+            return 10000
+        return 0
+
+    def weeks_supply(self, profile: ItemTradeProfile) -> str | int | None:
+        if profile.trade_good():
+            kind = "trade_goods"
+            max_income = self.base.trade_good_max_income
+        elif profile.life_good():
+            kind = "life_goods"
+            max_income = self.base.life_good_max_income
+        elif profile.drug():
+            kind = "drugs"
+            max_income = self.base.drug_max_income
+        else:
+            return None
+        max_sales = round(float(max_income or 0) / 4) if max_income else 0
+        if max_sales <= 0:
+            return "N/A"
+        bracket = self.market_bracket(profile)
+        total = round(self._tier_totals.get((kind, bracket), 0.0))
+        if total < max_sales:
+            return "< 1"
+        return int(round(total / max_sales))
+
+    def worth_buying(self, profile: ItemTradeProfile) -> bool:
+        supply = self.weeks_supply(profile)
+        if supply is None:
+            return False
+        if supply == "< 1":
+            return True
+        if isinstance(supply, int) and supply < MAXIMUM_WEEKS_TRADE_RESERVES:
+            return True
+        return False
+
+    def price_ok(
+        self,
+        profile: ItemTradeProfile,
+        best_buy: MarketBuy | None,
+        best_sell: MarketSell | None,
+    ) -> bool:
+        if self.recommended_buy_price(profile) <= 0 or self.recommended_buy_volume(profile) < 1:
+            return False
+        if (
+            profile.origin_periphery_id is not None
+            and self.base_periphery_id is not None
+            and int(profile.origin_periphery_id) == int(self.base_periphery_id)
+        ):
+            return False
+        base_id = int(self.base.id)
+        if best_sell is not None and int(best_sell.base_id) == base_id:
+            return False
+        if best_buy is not None and int(best_buy.base_id) == base_id:
+            return False
+        return True
+
+
+def build_competitive_calc(session: Session, base_id: int) -> CompetitiveCalc | None:
+    base = session.get(Base, int(base_id))
+    if base is None or base.trade_good_value_per_mu is None:
+        return None
+    md_id = _latest_market_datum_id(session)
+    if md_id is None:
+        return None
+
+    snapshot = _MarketSnapshot.load(session, md_id, int(base_id))
+    sellable = _load_sellable_items(session)
+
+    base_periphery_id: int | None = None
+    if base.star_system_id is not None:
+        ss = session.get(StarSystem, int(base.star_system_id))
+        if ss and ss.periphery_id is not None:
+            base_periphery_id = int(ss.periphery_id)
+
+    base_cbody_game_id: int | None = None
+    if base.celestial_body_id is not None:
+        cb = session.get(CelestialBody, int(base.celestial_body_id))
+        if cb and cb.cbody_id is not None:
+            base_cbody_game_id = int(cb.cbody_id)
+
+    profile_by_id = {profile.item_id: profile for _item, profile in sellable}
+    trade_rows = session.exec(
+        select(BaseItem, Item)
+        .where(BaseItem.base_id == int(base.id))
+        .where(BaseItem.category == "Trade Items")
+        .where(BaseItem.item_id == Item.id)
+    ).all()
+    non_local: list[tuple[BaseItem, Item, ItemTradeProfile]] = []
+    for bi, item in trade_rows:
+        profile = profile_by_id.get(int(item.id))
+        if profile is None:
+            profile = item_trade_profile(session, item)
+        if profile.trade_good() and not _item_local(session, profile, base):
+            non_local.append((bi, item, profile))
+        elif profile.life_good() and not profile.civilian() and not _item_local(session, profile, base):
+            non_local.append((bi, item, profile))
+        elif profile.drug() and not _item_local(session, profile, base):
+            non_local.append((bi, item, profile))
+
+    calc = CompetitiveCalc(
+        base=base,
+        snapshot=snapshot,
+        sellable=sellable,
+        base_periphery_id=base_periphery_id,
+        base_cbody_game_id=base_cbody_game_id,
+    )
+    calc._tier_totals = _compute_tier_totals(calc, non_local)
+    return calc
+
+
+def _compute_tier_totals(
+    calc: CompetitiveCalc,
+    trade_rows: list[tuple[BaseItem, Item, ItemTradeProfile]],
+) -> dict[tuple[str, str], float]:
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    for bi, _item, profile in trade_rows:
+        if profile.trade_good():
+            kind = "trade_goods"
+        elif profile.life_good() and not profile.civilian():
+            kind = "life_goods"
+        elif profile.drug():
+            kind = "drugs"
+        else:
+            continue
+        bracket = calc.market_bracket(profile)
+        totals[(kind, bracket)] += float(bi.quantity) * calc.local_price(profile)
+    return dict(totals)

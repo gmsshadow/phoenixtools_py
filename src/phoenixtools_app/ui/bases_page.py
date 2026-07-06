@@ -33,8 +33,8 @@ from phoenixtools_app.db.models import (
     StarSystem,
 )
 from phoenixtools_app.services.base_reports import (
-    competitive_buy_orders_text,
-    competitive_buy_rows,
+    CompetitiveLoadResult,
+    competitive_load,
     middleman_candidate_items,
     middleman_orders_text,
     raw_materials_for_base,
@@ -42,6 +42,7 @@ from phoenixtools_app.services.base_reports import (
 )
 from phoenixtools_app.services.import_turn import run_turn_import
 from phoenixtools_app.services.shipping_jobs import group_summaries_for_base, squadron_move_group_orders
+from phoenixtools_app.ui.background import run_job
 
 
 class BasesPage(QWidget):
@@ -52,6 +53,8 @@ class BasesPage(QWidget):
         self._my_affiliation_id: int | None = None
         self._detail_base_id: int | None = None
         self._comp_loaded_base_id: int | None = None
+        self._comp_load_token = 0
+        self._comp_job = None
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(200)
@@ -300,10 +303,77 @@ class BasesPage(QWidget):
         if row is None:
             return
         bid = int(row[0].id)
-        if self._comp_loaded_base_id == bid:
+        if self._comp_loaded_base_id == bid and self._comp_job is None:
             return
-        self._load_competitive_table(bid)
-        self._comp_loaded_base_id = bid
+        self._start_competitive_load(bid)
+
+    def _start_competitive_load(self, base_id: int) -> None:
+        self._comp_load_token += 1
+        token = self._comp_load_token
+        self._comp_loaded_base_id = None
+        self.planetary_summary.setText("Loading competitive buys…")
+        self.comp_table.setRowCount(0)
+        self._comp_text = ""
+        holder: list[CompetitiveLoadResult] = []
+
+        def job(_progress) -> str:
+            engine = make_engine()
+            with make_session(engine) as session:
+                holder.append(competitive_load(session, int(base_id)))
+            return f"{len(holder[0].rows)} competitive rows"
+
+        def on_done(_summary: str) -> None:
+            if token != self._comp_load_token:
+                return
+            self._comp_job = None
+            self._apply_competitive_result(holder[0])
+            self._comp_loaded_base_id = int(base_id)
+
+        def on_failed(err: str) -> None:
+            if token != self._comp_load_token:
+                return
+            self._comp_job = None
+            self.planetary_summary.setText(f"Competitive buys failed: {err}")
+
+        self._comp_job = run_job(self, job, on_progress=lambda _m: None, on_done=on_done, on_failed=on_failed)
+
+    def _apply_competitive_result(self, result: CompetitiveLoadResult) -> None:
+        self.planetary_summary.setText(result.planetary_summary)
+        self._comp_text = result.orders_text
+        names = result.base_names
+        rows = result.rows
+
+        self.comp_table.setSortingEnabled(False)
+        self.comp_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            bg = QBrush(QColor(40, 70, 40)) if row.worth_buying else QBrush(QColor(70, 40, 40))
+            self.comp_table.setItem(r, 0, _cell(row.item_name, bg=bg))
+            self.comp_table.setItem(
+                r, 1, _cell(f"{row.recommended_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight, bg=bg)
+            )
+            self.comp_table.setItem(
+                r, 2, _cell(str(row.recommended_buy_volume), align=Qt.AlignmentFlag.AlignRight, bg=bg)
+            )
+            sell_txt = (
+                f"{names.get(row.best_sell_base_id, row.best_sell_base_id)} @ ${row.best_sell_price:.2f}"
+                if row.best_sell_base_id and row.best_sell_price is not None
+                else "—"
+            )
+            buy_txt = (
+                f"{names.get(row.best_buy_base_id, row.best_buy_base_id)} @ ${row.best_buy_price:.2f}"
+                if row.best_buy_base_id and row.best_buy_price is not None
+                else "—"
+            )
+            self.comp_table.setItem(r, 3, _cell(sell_txt, bg=bg))
+            self.comp_table.setItem(r, 4, _cell(buy_txt, bg=bg))
+            self.comp_table.setItem(
+                r,
+                5,
+                _cell(f"${row.local_value:.2f} [{row.market_bracket}]", align=Qt.AlignmentFlag.AlignRight, bg=bg),
+            )
+            self.comp_table.setItem(r, 6, _cell(str(row.weeks_supply), bg=bg))
+            self.comp_table.setItem(r, 7, _cell("Yes" if row.worth_buying else "No", bg=bg))
+        self.comp_table.setSortingEnabled(True)
 
     def _refresh(self) -> None:
         with make_session(self._engine) as session:
@@ -489,6 +559,7 @@ class BasesPage(QWidget):
             self._load_trade_raw_tables(bid)
             self._load_resource_mass_outposts_tables(bid)
             if self.tabs.tabText(self.tabs.currentIndex()) == "Competitive buys":
+                self._comp_loaded_base_id = None
                 self._load_competitive_if_needed()
         except Exception as e:
             QMessageBox.critical(self, "Turn import failed", str(e))
@@ -538,54 +609,6 @@ class BasesPage(QWidget):
             self.raw_table.setItem(r, 0, _cell(str(bi.quantity), align=Qt.AlignmentFlag.AlignRight))
             self.raw_table.setItem(r, 1, _cell(item.name))
             self.raw_table.setItem(r, 2, _cell(str(item.id), align=Qt.AlignmentFlag.AlignRight))
-
-    def _load_competitive_table(self, base_id: int) -> None:
-        with make_session(self._engine) as session:
-            base = session.get(Base, int(base_id))
-            rows = competitive_buy_rows(session, base_id)
-            names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
-            self._comp_text = competitive_buy_orders_text(session, base_id)
-            if base and base.trade_good_value_per_mu is not None:
-                self.planetary_summary.setText(
-                    f"Trade MU: {base.trade_good_value_per_mu:.2f} · "
-                    f"Life MU: {base.life_good_value_per_mu or 0:.2f} · "
-                    f"Drug MU: {base.drug_value_per_mu or 0:.2f} · "
-                    f"Max trade income: {base.trade_good_max_income or 0:.0f}"
-                )
-            else:
-                self.planetary_summary.setText(
-                    "No planetary market on this base — import a turn report (starbases have Planetary Report)."
-                )
-
-        self.comp_table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            bg = QBrush(QColor(40, 70, 40)) if row.worth_buying else QBrush(QColor(70, 40, 40))
-            self.comp_table.setItem(r, 0, _cell(row.item_name, bg=bg))
-            self.comp_table.setItem(
-                r, 1, _cell(f"{row.recommended_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight, bg=bg)
-            )
-            self.comp_table.setItem(
-                r, 2, _cell(str(row.recommended_buy_volume), align=Qt.AlignmentFlag.AlignRight, bg=bg)
-            )
-            sell_txt = (
-                f"{names.get(row.best_sell_base_id, row.best_sell_base_id)} @ ${row.best_sell_price:.2f}"
-                if row.best_sell_base_id and row.best_sell_price is not None
-                else "—"
-            )
-            buy_txt = (
-                f"{names.get(row.best_buy_base_id, row.best_buy_base_id)} @ ${row.best_buy_price:.2f}"
-                if row.best_buy_base_id and row.best_buy_price is not None
-                else "—"
-            )
-            self.comp_table.setItem(r, 3, _cell(sell_txt, bg=bg))
-            self.comp_table.setItem(r, 4, _cell(buy_txt, bg=bg))
-            self.comp_table.setItem(
-                r,
-                5,
-                _cell(f"${row.local_value:.2f} [{row.market_bracket}]", align=Qt.AlignmentFlag.AlignRight, bg=bg),
-            )
-            self.comp_table.setItem(r, 6, _cell(str(row.weeks_supply), bg=bg))
-            self.comp_table.setItem(r, 7, _cell("Yes" if row.worth_buying else "No", bg=bg))
 
     def _load_resource_mass_outposts_tables(self, base_id: int) -> None:
         self._load_resource_tab(base_id)
