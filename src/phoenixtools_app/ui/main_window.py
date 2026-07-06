@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -155,7 +156,8 @@ class HomePage(QWidget):
         self.daily_btn = QPushButton("Run daily refresh (market)")
         self.full_btn = QPushButton("Run full refresh")
         self.items_btn = QPushButton("Fetch item data (missing attributes)")
-        self.turn_btn = QPushButton("Fetch turn data (my bases)")
+        self.turn_btn = QPushButton("Import turns (all owned bases)")
+        self.turn_starbases_only = QCheckBox("Starbases only (skip outposts)")
         self.turns_dialog_btn = QPushButton("Import Nexus turns (incl. External)…")
 
         left_layout.addRow("Status", self.status)
@@ -163,6 +165,7 @@ class HomePage(QWidget):
         left_layout.addRow("", self.full_btn)
         left_layout.addRow("", self.items_btn)
         left_layout.addRow("", self.turn_btn)
+        left_layout.addRow("", self.turn_starbases_only)
         left_layout.addRow("", self.turns_dialog_btn)
 
         self.log = QTextEdit()
@@ -196,8 +199,15 @@ class HomePage(QWidget):
         )
 
     def _set_busy(self, busy: bool) -> None:
-        for btn in (self.daily_btn, self.full_btn, self.items_btn, self.turn_btn, self.turns_dialog_btn):
+        for btn in (
+            self.daily_btn,
+            self.full_btn,
+            self.items_btn,
+            self.turn_btn,
+            self.turns_dialog_btn,
+        ):
             btn.setEnabled(not busy)
+        self.turn_starbases_only.setEnabled(not busy)
 
     def _start_job(self, start_msg: str, fn) -> None:
         if self._job is not None:
@@ -242,12 +252,20 @@ class HomePage(QWidget):
         self._start_job("Starting item attributes fetch (missing only) …", job)
 
     def _fetch_turns(self) -> None:
+        starbases_only = self.turn_starbases_only.isChecked()
+
         def job(progress) -> str:
             engine = make_engine()
             with make_session(engine) as session:
-                result = run_turn_import_for_my_bases(session, progress=progress)
+                result = run_turn_import_for_my_bases(
+                    session,
+                    progress=progress,
+                    starbases_only=starbases_only,
+                    refresh_positions=True,
+                )
+            scope = "starbases" if starbases_only else "owned bases"
             summary = (
-                f"Turn data: {result.bases_ok}/{result.bases_total} bases imported, "
+                f"Turn import ({scope}): {result.bases_ok}/{result.bases_total} imported, "
                 f"{result.bases_failed} failed. "
                 f"{result.item_group_rows} item-group rows, {result.inventory_items} inventory items."
             )
@@ -257,7 +275,11 @@ class HomePage(QWidget):
                     summary += f"\n  … and {len(result.errors) - 20} more."
             return summary
 
-        self._start_job("Starting turn data fetch for my bases …", job)
+        label = "starbases" if starbases_only else "owned bases"
+        self._start_job(
+            f"Starting bulk turn import ({label}): refresh positions, then fetch each turn …",
+            job,
+        )
 
     def _open_turns_dialog(self) -> None:
         if self._job is not None:

@@ -32,6 +32,12 @@ class SetupResult:
     positions: int
 
 
+@dataclass(frozen=True)
+class PositionsRefreshResult:
+    positions: int
+    bases_upserted: int
+
+
 def run_setup_import(session: Session, *, progress: ProgressCb | None = None) -> SetupResult:
     cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
     if not cfg or not cfg.user_id or not cfg.xml_code:
@@ -59,27 +65,8 @@ def run_setup_import(session: Session, *, progress: ProgressCb | None = None) ->
         log(f"Importing affiliations ({len(info.affiliations)}) …")
         _upsert_pairs(session, Affiliation, info.affiliations)
 
-        log("Fetching pos_list …")
-        pos_xml = client.fetch("pos_list")
-        pos = parse_pos_list(pos_xml)
-
-        log(f"Importing positions ({len(pos.positions)}) …")
-        positions_count = 0
-        for p in pos.positions:
-            existing = session.get(Position, int(p["id"]))
-            if existing is None:
-                session.add(Position(**p))  # type: ignore[arg-type]
-            else:
-                for k, v in p.items():
-                    setattr(existing, k, v)
-            positions_count += 1
-
-        session.commit()
-
-        log("Upserting bases from positions + linking outpost hubs …")
-        aff_id = int(cfg.affiliation_id) if cfg.affiliation_id is not None else None
-        upsert_bases_from_positions(session, default_affiliation_id=aff_id)
-        link_outposts_to_hub(session)
+        pos_result = _import_pos_list(session, client, cfg, log)
+        positions_count = pos_result.positions
 
         app_state = session.exec(select(AppState).where(AppState.id == 1)).first()
         if app_state:
@@ -97,6 +84,51 @@ def run_setup_import(session: Session, *, progress: ProgressCb | None = None) ->
         )
     finally:
         client.close()
+
+
+def run_positions_refresh(session: Session, *, progress: ProgressCb | None = None) -> PositionsRefreshResult:
+    """Fetch pos_list from Nexus, upsert owned positions/bases, and re-link outpost hubs."""
+    cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
+    if not cfg or not cfg.user_id or not cfg.xml_code:
+        raise RuntimeError("Missing Nexus configuration (user_id/xml_code).")
+
+    def log(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    client = NexusXmlClient(NexusXmlConfig(user_id=int(cfg.user_id), xml_code=str(cfg.xml_code)))
+    try:
+        return _import_pos_list(session, client, cfg, log)
+    finally:
+        client.close()
+
+
+def _import_pos_list(
+    session: Session,
+    client: NexusXmlClient,
+    cfg: NexusConfig,
+    log: Callable[[str], None],
+) -> PositionsRefreshResult:
+    log("Fetching pos_list …")
+    pos_xml = client.fetch("pos_list")
+    pos = parse_pos_list(pos_xml)
+
+    log(f"Importing positions ({len(pos.positions)}) …")
+    for p in pos.positions:
+        existing = session.get(Position, int(p["id"]))
+        if existing is None:
+            session.add(Position(**p))  # type: ignore[arg-type]
+        else:
+            for k, v in p.items():
+                setattr(existing, k, v)
+
+    session.commit()
+
+    log("Upserting bases from positions + linking outpost hubs …")
+    aff_id = int(cfg.affiliation_id) if cfg.affiliation_id is not None else None
+    bases_upserted = upsert_bases_from_positions(session, default_affiliation_id=aff_id)
+    link_outposts_to_hub(session)
+    return PositionsRefreshResult(positions=len(pos.positions), bases_upserted=bases_upserted)
 
 
 def _upsert_pairs(session: Session, model, pairs: list[tuple[int, str]]) -> None:

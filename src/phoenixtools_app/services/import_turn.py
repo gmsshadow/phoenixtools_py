@@ -14,6 +14,7 @@ from phoenixtools_app.db.models import (
     ItemGroup,
     MassProduction,
     NexusConfig,
+    Position,
     StarSystem,
 )
 from phoenixtools_app.importer.nexus_html import NexusHtmlClient, NexusHtmlConfig
@@ -26,9 +27,12 @@ from phoenixtools_app.importer.parsers import (
     parse_turn_location_ids,
     parse_turn_position_type,
 )
+from phoenixtools_app.services.import_setup import run_positions_refresh
 
 
 ProgressCb = Callable[[str], None]
+
+_BASE_POSITION_CLASSES = frozenset({"Starbase", "Outpost"})
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,21 @@ class BulkTurnImportResult:
     errors: list[str]
 
 
+def _owned_positions(session: Session, *, starbases_only: bool = False) -> list[Position]:
+    """Owned base facilities from the last pos_list import (excludes ships/platforms)."""
+    out: list[Position] = []
+    for pos in session.exec(select(Position)).all():
+        pc = (pos.position_class or "").strip()
+        if pc not in _BASE_POSITION_CLASSES:
+            continue
+        if starbases_only and pc != "Starbase":
+            continue
+        out.append(pos)
+    return sorted(out, key=lambda p: (p.name or f"Position {p.id}").lower())
+
+
 def _my_owned_bases(session: Session) -> list[Base]:
+    """Owned bases for reports — affiliation match plus any tracked shared turns."""
     cfg = session.exec(select(NexusConfig).where(NexusConfig.id == 1)).first()
     my_aff = int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
     bases = session.exec(select(Base)).all()
@@ -70,36 +88,55 @@ def _my_owned_bases(session: Session) -> list[Base]:
             if bool(b.tracked) or (b.affiliation_id is not None and int(b.affiliation_id) == my_aff)
         ]
     else:
-        # No affiliation configured: bases with any affiliation were created from our own positions.
         owned = [b for b in bases if bool(b.tracked) or b.affiliation_id is not None]
     return sorted(owned, key=lambda b: (b.name or f"Base {b.id}").lower())
 
 
-def run_turn_import_for_my_bases(session: Session, *, progress: ProgressCb | None = None) -> BulkTurnImportResult:
-    """Run `run_turn_import` for every base in the configured affiliation, continuing past failures."""
+def run_turn_import_for_my_bases(
+    session: Session,
+    *,
+    progress: ProgressCb | None = None,
+    starbases_only: bool = False,
+    refresh_positions: bool = True,
+) -> BulkTurnImportResult:
+    """
+    Bulk-import turn data for every owned base facility (Rails `phoenixtools:turns` / `:all_turns`).
+
+    Refreshes pos_list first by default so new outposts/starbases are picked up, then fetches each
+    turn via the XML/HTML APIs. Does not import tracked external/shared turns.
+    """
     def log(msg: str) -> None:
         if progress:
             progress(msg)
 
-    owned = _my_owned_bases(session)
+    if refresh_positions:
+        try:
+            pos = run_positions_refresh(session, progress=progress)
+            log(f"Positions refreshed: {pos.positions} positions, {pos.bases_upserted} bases updated.")
+        except Exception as e:  # noqa: BLE001 - continue with cached positions if refresh fails
+            log(f"Position refresh failed ({e}); using cached owned positions …")
+
+    owned = _owned_positions(session, starbases_only=starbases_only)
     if not owned:
-        log("No owned bases found (set your affiliation id in Configuration, or run setup import).")
+        scope = "starbases" if starbases_only else "owned bases"
+        log(f"No {scope} found (run setup import or check Nexus XML credentials).")
         return BulkTurnImportResult(0, 0, 0, 0, 0, [])
 
-    log(f"Importing turn data for {len(owned)} owned base(s) …")
+    scope = "starbase" if starbases_only else "owned base"
+    log(f"Importing turn data for {len(owned)} {scope}(s) …")
     ok = failed = inv = rows = 0
     errors: list[str] = []
-    for idx, b in enumerate(owned, start=1):
-        label = b.name or f"Base {b.id}"
-        log(f"[{idx}/{len(owned)}] {label} ({b.id}) …")
+    for idx, pos in enumerate(owned, start=1):
+        label = pos.name or f"Base {pos.id}"
+        log(f"[{idx}/{len(owned)}] {label} ({pos.id}) …")
         try:
-            r = run_turn_import(session, int(b.id), progress=progress)
+            r = run_turn_import(session, int(pos.id), progress=progress)
             ok += 1
             inv += r.inventory_items
             rows += r.item_group_rows
         except Exception as e:  # noqa: BLE001 - report per-base and keep going
             failed += 1
-            errors.append(f"{label} ({b.id}): {e}")
+            errors.append(f"{label} ({pos.id}): {e}")
             log(f"  ERROR: {e}")
 
     log(f"Turn data import finished: {ok} ok, {failed} failed.")
