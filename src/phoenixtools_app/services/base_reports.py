@@ -6,6 +6,19 @@ from sqlmodel import Session, select
 
 from phoenixtools_app.db.models import Base, BaseItem, Item, MarketBuy, MarketDatum, MarketSell
 from phoenixtools_app.services.phoenix_order import PhoenixOrder
+from phoenixtools_app.services.planetary_market import (
+    competitive_buy_price_ok,
+    local_price,
+    market_bracket,
+    recommended_buy_price,
+    recommended_buy_volume,
+    sellable_items,
+    worth_buying,
+    weeks_supply_of_same_category,
+    _best_buy_sell,
+    _latest_market_datum_id,
+    _selling_item,
+)
 
 
 @dataclass(frozen=True)
@@ -14,16 +27,14 @@ class CompetitiveBuyRow:
     item_name: str
     recommended_buy_price: float
     recommended_buy_volume: int
-    best_sell_base_id: int
-    best_sell_price: float
-    best_buy_base_id: int
-    best_buy_price: float
-    profit: float
-
-
-def _latest_market_datum_id(session: Session) -> int | None:
-    md = session.exec(select(MarketDatum).order_by(MarketDatum.market_time.desc())).first()
-    return int(md.id) if md and md.id is not None else None
+    local_value: float
+    market_bracket: str
+    weeks_supply: str | int
+    worth_buying: bool
+    best_sell_base_id: int | None
+    best_sell_price: float | None
+    best_buy_base_id: int | None
+    best_buy_price: float | None
 
 
 def trade_items_for_base(session: Session, base_id: int) -> list[tuple[BaseItem, Item]]:
@@ -49,89 +60,61 @@ def raw_materials_for_base(session: Session, base_id: int) -> list[tuple[BaseIte
 
 
 def competitive_buy_rows(session: Session, base_id: int) -> list[CompetitiveBuyRow]:
-    """
-    Approximates Rails `competitive_buyable_goods` using latest market snapshot.
-    Full parity needs item types + planetary market columns on Base.
-    """
+    """Rails Base#competitive_buyable_goods with planetary market pricing."""
+    base = session.get(Base, int(base_id))
+    if base is None or base.trade_good_value_per_mu is None:
+        return []
+
     md_id = _latest_market_datum_id(session)
     if md_id is None:
         return []
 
-    base = session.get(Base, int(base_id))
-    if base is None:
-        return []
-
-    buys = session.exec(select(MarketBuy).where(MarketBuy.market_datum_id == md_id)).all()
-    sells = session.exec(select(MarketSell).where(MarketSell.market_datum_id == md_id)).all()
-
-    best_buy: dict[int, MarketBuy] = {}
-    for b in buys:
-        cur = best_buy.get(int(b.item_id))
-        if cur is None or float(b.price) > float(cur.price):
-            best_buy[int(b.item_id)] = b
-
-    best_sell: dict[int, MarketSell] = {}
-    for s in sells:
-        cur = best_sell.get(int(s.item_id))
-        if cur is None or float(s.price) < float(cur.price):
-            best_sell[int(s.item_id)] = s
-
     out: list[CompetitiveBuyRow] = []
-    for item_id in set(best_buy.keys()) & set(best_sell.keys()):
-        bb = best_buy[item_id]
-        bs = best_sell[item_id]
-        if int(bb.base_id) == int(base_id) or int(bs.base_id) == int(base_id):
+    for item, profile in sellable_items(session):
+        if _selling_item(session, int(base_id), int(item.id), md_id):
             continue
-        local_sell = session.exec(
-            select(MarketSell).where(MarketSell.base_id == int(base_id), MarketSell.item_id == int(item_id))
-        ).first()
-        if local_sell is not None:
+        best_buy, best_sell = _best_buy_sell(session, int(item.id), md_id)
+        if not competitive_buy_price_ok(
+            session, base, profile, md_id=md_id, best_buy=best_buy, best_sell=best_sell
+        ):
             continue
-
-        profit = float(bb.price) - float(bs.price)
-        if profit <= 0:
-            continue
-
-        # Rails uses planetary local_price * tier; without that, interpolate between best sell and best buy.
-        sell_p = float(bs.price)
-        buy_p = float(bb.price)
-        rbp = round(sell_p + profit * 0.35, 2)
-        if rbp <= sell_p or rbp >= buy_p:
-            continue
-        rbv = int(min(100_000, max(1, 50_000 / rbp))) if rbp > 0 else 0
-
-        item = session.get(Item, int(item_id))
-        name = item.name if item else f"Item {item_id}"
-
+        rbp = recommended_buy_price(session, profile, base)
+        rbv = recommended_buy_volume(session, profile, base)
         out.append(
             CompetitiveBuyRow(
-                item_id=int(item_id),
-                item_name=name,
+                item_id=int(item.id),
+                item_name=item.name,
                 recommended_buy_price=rbp,
                 recommended_buy_volume=rbv,
-                best_sell_base_id=int(bs.base_id),
-                best_sell_price=float(bs.price),
-                best_buy_base_id=int(bb.base_id),
-                best_buy_price=float(bb.price),
-                profit=profit,
+                local_value=local_price(session, profile, base),
+                market_bracket=market_bracket(session, profile, base),
+                weeks_supply=weeks_supply_of_same_category(session, base, profile) or "—",
+                worth_buying=worth_buying(session, base, profile),
+                best_sell_base_id=int(best_sell.base_id) if best_sell else None,
+                best_sell_price=float(best_sell.price) if best_sell else None,
+                best_buy_base_id=int(best_buy.base_id) if best_buy else None,
+                best_buy_price=float(best_buy.price) if best_buy else None,
             )
         )
-
-    out.sort(key=lambda r: r.profit, reverse=True)
+    out.sort(key=lambda r: (not r.worth_buying, r.item_name.lower()))
     return out
 
 
 def competitive_buy_orders(session: Session, base_id: int) -> list[PhoenixOrder]:
-    rows = competitive_buy_rows(session, base_id)
+    base = session.get(Base, int(base_id))
+    if base is None:
+        return []
     orders: list[PhoenixOrder] = []
-    for r in rows:
-        if r.recommended_buy_volume < 1 or r.recommended_buy_price <= 0:
+    for row in competitive_buy_rows(session, base_id):
+        if not row.worth_buying:
+            continue
+        if row.recommended_buy_volume < 1 or row.recommended_buy_price <= 0:
             continue
         orders.append(
             PhoenixOrder.market_buy(
-                r.item_id,
-                r.recommended_buy_volume,
-                r.recommended_buy_price,
+                row.item_id,
+                row.recommended_buy_volume,
+                row.recommended_buy_price,
                 False,
                 False,
                 0,
@@ -188,7 +171,6 @@ def middleman_info(session: Session, item_id: int) -> MiddlemanInfo | None:
 
 
 def middleman_candidate_items(session: Session) -> list[tuple[int, str]]:
-    """Items that have both buys and sells in the latest market (for middleman picker)."""
     md_id = _latest_market_datum_id(session)
     if md_id is None:
         return []
@@ -227,7 +209,7 @@ def middleman_orders_text(session: Session, item_id: int) -> str:
 def competitive_buy_orders_text(session: Session, base_id: int) -> str:
     orders = competitive_buy_orders(session, base_id)
     if not orders:
-        return "; No competitive buy orders generated (market may be empty or no eligible items)."
+        return "; No competitive buy orders generated (import a turn with planetary market data + refresh market)."
     lines = [f"; Competitive market buy orders for base {base_id} ({len(orders)} orders)", ""]
     lines.extend(str(o) for o in orders)
     return "\n".join(lines)

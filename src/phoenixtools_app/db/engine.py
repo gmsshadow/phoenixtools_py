@@ -54,6 +54,23 @@ def _migrate_sqlite(engine) -> None:
                 conn.execute(text("ALTER TABLE base ADD COLUMN blacklist INTEGER DEFAULT 0"))
             if "tracked" not in cols:
                 conn.execute(text("ALTER TABLE base ADD COLUMN tracked INTEGER DEFAULT 0"))
+            for col, typ in (
+                ("race", "VARCHAR"),
+                ("trade_good_value_per_mu", "REAL"),
+                ("life_good_value_per_mu", "REAL"),
+                ("drug_value_per_mu", "REAL"),
+                ("trade_good_low_value", "REAL"),
+                ("trade_good_high_value", "REAL"),
+                ("life_good_low_value", "REAL"),
+                ("life_good_high_value", "REAL"),
+                ("drug_low_value", "REAL"),
+                ("drug_high_value", "REAL"),
+                ("trade_good_max_income", "REAL"),
+                ("life_good_max_income", "REAL"),
+                ("drug_max_income", "REAL"),
+            ):
+                if col not in cols:
+                    conn.execute(text(f"ALTER TABLE base ADD COLUMN {col} {typ}"))
 
     if "position" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("position")}

@@ -28,6 +28,7 @@ from phoenixtools_app.importer.parsers import (
     parse_turn_position_type,
 )
 from phoenixtools_app.services.import_setup import run_positions_refresh
+from phoenixtools_app.services.planetary_market import apply_planetary_market
 
 
 ProgressCb = Callable[[str], None]
@@ -268,6 +269,11 @@ def _store_turn(session: Session, base: Base, parsed) -> TurnImportResult:
         )
 
     session.commit()
+
+    apply_planetary_market(base, parsed.planetary_market)
+    session.add(base)
+    session.commit()
+
     return TurnImportResult(
         base_id=int(base.id),
         inventory_items=inv_count,

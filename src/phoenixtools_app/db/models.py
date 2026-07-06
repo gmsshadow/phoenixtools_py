@@ -97,6 +97,19 @@ class Base(SQLModel, table=True):
     hub_id: int | None = Field(default=None, foreign_key="base.id")
     # True for turns we track from the Nexus turns list (own selections + shared turns).
     tracked: bool = Field(default=False)
+    race: str | None = None
+    trade_good_value_per_mu: float | None = None
+    life_good_value_per_mu: float | None = None
+    drug_value_per_mu: float | None = None
+    trade_good_low_value: float | None = None
+    trade_good_high_value: float | None = None
+    life_good_low_value: float | None = None
+    life_good_high_value: float | None = None
+    drug_low_value: float | None = None
+    drug_high_value: float | None = None
+    trade_good_max_income: float | None = None
+    life_good_max_income: float | None = None
+    drug_max_income: float | None = None
 
 
 class MarketDatum(SQLModel, table=True):

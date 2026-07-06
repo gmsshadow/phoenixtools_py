@@ -165,13 +165,24 @@ class BasesPage(QWidget):
         comp_layout = QVBoxLayout(comp_tab)
         comp_layout.addWidget(
             QLabel(
-                "<b>Competitive market buys</b> — approximate vs Rails "
-                "(full parity needs planetary market fields on the base + item classifications)."
+                "<b>Competitive market buys</b> — uses planetary market data from the last imported turn "
+                "and latest market snapshot (Rails parity)."
             )
         )
+        self.planetary_summary = QLabel("Select a starbase with imported turn data.")
+        comp_layout.addWidget(self.planetary_summary)
         self.comp_table = QTableWidget(0, 8)
         self.comp_table.setHorizontalHeaderLabels(
-            ["Item", "Rec. buy", "Volume", "Profit", "Best sell @", "Best buy @", "Sell base", "Buy base"]
+            [
+                "Item",
+                "Buy price",
+                "Volume",
+                "Best seller",
+                "Best buyer",
+                "Local value",
+                "Supply (wk)",
+                "OK?",
+            ]
         )
         self.comp_copy_btn = QPushButton("Copy competitive buy orders")
         self._comp_text = ""
@@ -486,20 +497,51 @@ class BasesPage(QWidget):
 
     def _load_competitive_table(self, base_id: int) -> None:
         with make_session(self._engine) as session:
+            base = session.get(Base, int(base_id))
             rows = competitive_buy_rows(session, base_id)
             names = {int(b.id): (b.name or f"Base {b.id}") for b in session.exec(select(Base)).all()}
             self._comp_text = competitive_buy_orders_text(session, base_id)
+            if base and base.trade_good_value_per_mu is not None:
+                self.planetary_summary.setText(
+                    f"Trade MU: {base.trade_good_value_per_mu:.2f} · "
+                    f"Life MU: {base.life_good_value_per_mu or 0:.2f} · "
+                    f"Drug MU: {base.drug_value_per_mu or 0:.2f} · "
+                    f"Max trade income: {base.trade_good_max_income or 0:.0f}"
+                )
+            else:
+                self.planetary_summary.setText(
+                    "No planetary market on this base — import a turn report (starbases have Planetary Report)."
+                )
 
         self.comp_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
-            self.comp_table.setItem(r, 0, _cell(row.item_name))
-            self.comp_table.setItem(r, 1, _cell(f"{row.recommended_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
-            self.comp_table.setItem(r, 2, _cell(str(row.recommended_buy_volume), align=Qt.AlignmentFlag.AlignRight))
-            self.comp_table.setItem(r, 3, _cell(f"{row.profit:.2f}", align=Qt.AlignmentFlag.AlignRight))
-            self.comp_table.setItem(r, 4, _cell(f"{row.best_sell_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
-            self.comp_table.setItem(r, 5, _cell(f"{row.best_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight))
-            self.comp_table.setItem(r, 6, _cell(names.get(row.best_sell_base_id, str(row.best_sell_base_id))))
-            self.comp_table.setItem(r, 7, _cell(names.get(int(row.best_buy_base_id), str(row.best_buy_base_id))))
+            bg = QBrush(QColor(40, 70, 40)) if row.worth_buying else QBrush(QColor(70, 40, 40))
+            self.comp_table.setItem(r, 0, _cell(row.item_name, bg=bg))
+            self.comp_table.setItem(
+                r, 1, _cell(f"{row.recommended_buy_price:.2f}", align=Qt.AlignmentFlag.AlignRight, bg=bg)
+            )
+            self.comp_table.setItem(
+                r, 2, _cell(str(row.recommended_buy_volume), align=Qt.AlignmentFlag.AlignRight, bg=bg)
+            )
+            sell_txt = (
+                f"{names.get(row.best_sell_base_id, row.best_sell_base_id)} @ ${row.best_sell_price:.2f}"
+                if row.best_sell_base_id and row.best_sell_price is not None
+                else "—"
+            )
+            buy_txt = (
+                f"{names.get(row.best_buy_base_id, row.best_buy_base_id)} @ ${row.best_buy_price:.2f}"
+                if row.best_buy_base_id and row.best_buy_price is not None
+                else "—"
+            )
+            self.comp_table.setItem(r, 3, _cell(sell_txt, bg=bg))
+            self.comp_table.setItem(r, 4, _cell(buy_txt, bg=bg))
+            self.comp_table.setItem(
+                r,
+                5,
+                _cell(f"${row.local_value:.2f} [{row.market_bracket}]", align=Qt.AlignmentFlag.AlignRight, bg=bg),
+            )
+            self.comp_table.setItem(r, 6, _cell(str(row.weeks_supply), bg=bg))
+            self.comp_table.setItem(r, 7, _cell("Yes" if row.worth_buying else "No", bg=bg))
 
     def _load_resource_mass_outposts_tables(self, base_id: int) -> None:
         self._load_resource_tab(base_id)
@@ -712,10 +754,12 @@ def _load_bases(session: Session) -> list[tuple[Base, StarSystem | None, Celesti
     return out
 
 
-def _cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetItem:
+def _cell(text: str, *, align: Qt.AlignmentFlag | None = None, bg: QBrush | None = None) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     if align is not None:
         item.setTextAlignment(int(align))
+    if bg is not None:
+        item.setBackground(bg)
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
     return item
 

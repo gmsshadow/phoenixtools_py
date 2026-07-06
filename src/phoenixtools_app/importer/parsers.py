@@ -333,6 +333,61 @@ def _parse_html_table_rows(table_node) -> list[list[str]]:
     return rows
 
 
+def _parse_float_cell(text: str) -> float | None:
+    text = (text or "").strip().replace(",", "").replace("$", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_planetary_report(rows: list[list[str]]) -> PlanetaryMarket | None:
+    """
+    Parse Planetary Report rows into trade multipliers/thresholds.
+    Expects category rows labelled Trade Goods / Drugs / Lifeforms with Max, Value/MU, Low, High.
+    """
+    field_map = {
+        "Trade Goods": (
+            "trade_good_max_income",
+            "trade_good_value_per_mu",
+            "trade_good_low_value",
+            "trade_good_high_value",
+        ),
+        "Drugs": (
+            "drug_max_income",
+            "drug_value_per_mu",
+            "drug_low_value",
+            "drug_high_value",
+        ),
+        "Lifeforms": (
+            "life_good_max_income",
+            "life_good_value_per_mu",
+            "life_good_low_value",
+            "life_good_high_value",
+        ),
+    }
+    found: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
+    for row in rows:
+        if not row:
+            continue
+        label = row[0].strip()
+        if label not in field_map:
+            continue
+        vals = [_parse_float_cell(row[i]) if len(row) > i else None for i in range(1, 5)]
+        found[label] = (vals[0], vals[1], vals[2], vals[3])
+    if "Trade Goods" not in found:
+        return None
+    kw: dict[str, float | None] = {}
+    for label, names in field_map.items():
+        if label not in found:
+            continue
+        for name, val in zip(names, found[label], strict=True):
+            kw[name] = val
+    return PlanetaryMarket(**kw) if kw else None
+
+
 def _report_sections_from_doc(doc) -> dict[str, list[list[str]]]:
     """Collect table rows following each `td.report_left` heading (Rails NexusTurn-style layout)."""
     out: dict[str, list[list[str]]] = {}
@@ -345,7 +400,9 @@ def _report_sections_from_doc(doc) -> dict[str, list[list[str]]]:
             continue
         tr = tr[0]
         block: list[list[str]] = []
-        for sib in tr.itersiblings():
+        # Planetary Report spans multiple nested tables (Rails merges two parse_table calls).
+        sibling_limit = 12 if title == "Planetary Report" else 6
+        for sib in list(tr.itersiblings())[:sibling_limit]:
             if sib.tag == "table":
                 block.extend(_parse_html_table_rows(sib))
             for tbl in sib.xpath(".//table"):
@@ -483,6 +540,28 @@ def _merge_base_resources_from_sections(sections: dict[str, list[list[str]]]) ->
 
 
 @dataclass(frozen=True)
+class PlanetaryMarket:
+    """Planetary Report trade section (Rails NexusTurn#planetary_report['Trade'])."""
+
+    trade_good_value_per_mu: float | None = None
+    life_good_value_per_mu: float | None = None
+    drug_value_per_mu: float | None = None
+    trade_good_low_value: float | None = None
+    trade_good_high_value: float | None = None
+    life_good_low_value: float | None = None
+    life_good_high_value: float | None = None
+    drug_low_value: float | None = None
+    drug_high_value: float | None = None
+    trade_good_max_income: float | None = None
+    life_good_max_income: float | None = None
+    drug_max_income: float | None = None
+
+    @property
+    def has_trade_data(self) -> bool:
+        return self.trade_good_value_per_mu is not None
+
+
+@dataclass(frozen=True)
 class TurnData:
     inventory: dict[int, int]
     trade_items: dict[int, int]
@@ -490,6 +569,7 @@ class TurnData:
     item_groups: dict[int, dict[str, object]]  # {group_id: {"name": str, "items": {item_id: qty}}}
     mass_production: list[dict[str, object]] = field(default_factory=list)
     base_resources: list[dict[str, object]] = field(default_factory=list)
+    planetary_market: PlanetaryMarket | None = None
 
 
 @dataclass(frozen=True)
@@ -862,6 +942,7 @@ def parse_turn_html(html_text: str) -> TurnData:
     sections = _report_sections_from_doc(doc)
     mass_production = _parse_mass_production_rows(sections.get("Production Report") or [])
     base_resources = _merge_base_resources_from_sections(sections)
+    planetary_market = parse_planetary_report(sections.get("Planetary Report") or [])
 
     return TurnData(
         inventory=inventory,
@@ -870,6 +951,7 @@ def parse_turn_html(html_text: str) -> TurnData:
         item_groups=item_groups,
         mass_production=mass_production,
         base_resources=base_resources,
+        planetary_market=planetary_market,
     )
 
 
