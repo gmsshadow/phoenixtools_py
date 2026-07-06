@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,6 +50,11 @@ class BasesPage(QWidget):
         self._engine = make_engine()
         self._rows: list[tuple[Base, StarSystem | None, CelestialBody | None]] = []
         self._my_affiliation_id: int | None = None
+        self._detail_base_id: int | None = None
+        self._comp_loaded_base_id: int | None = None
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(200)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -267,7 +272,8 @@ class BasesPage(QWidget):
         root.addWidget(self.tabs, 2)
 
         self.refresh_btn.clicked.connect(self._refresh)
-        self.filter.textChanged.connect(self._apply_filter)
+        self.filter.textChanged.connect(lambda: self._filter_timer.start())
+        self._filter_timer.timeout.connect(self._apply_filter)
         self.table.itemSelectionChanged.connect(self._show_detail)
         self.copy_id_btn.clicked.connect(self._copy_id)
         self.fetch_turn_btn.clicked.connect(self._fetch_turn)
@@ -283,8 +289,21 @@ class BasesPage(QWidget):
         self._refresh_middleman_items()
 
     def _on_tab_changed(self, index: int) -> None:
-        if self.tabs.tabText(index) == "Middleman":
+        tab = self.tabs.tabText(index)
+        if tab == "Middleman":
             self._refresh_middleman_items()
+        elif tab == "Competitive buys":
+            self._load_competitive_if_needed()
+
+    def _load_competitive_if_needed(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        bid = int(row[0].id)
+        if self._comp_loaded_base_id == bid:
+            return
+        self._load_competitive_table(bid)
+        self._comp_loaded_base_id = bid
 
     def _refresh(self) -> None:
         with make_session(self._engine) as session:
@@ -293,6 +312,22 @@ class BasesPage(QWidget):
             self._my_affiliation_id = (
                 int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
             )
+        self._detail_base_id = None
+        self._comp_loaded_base_id = None
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(self._rows))
+        for row_idx, (b, ss, cb) in enumerate(self._rows):
+            self.table.setItem(row_idx, 0, _num_cell(int(b.id)))
+            self.table.setItem(row_idx, 1, _cell(b.name or f"Base {b.id}"))
+            self.table.setItem(row_idx, 2, _cell(ss.name if ss else "—"))
+            self.table.setItem(row_idx, 3, _cell(cb.name if cb and cb.name else "—"))
+            self.table.setItem(row_idx, 4, _num_cell(b.docks))
+            self.table.setItem(row_idx, 5, _num_cell(b.hiports))
+            if self._base_is_mine(b):
+                _highlight_row(self.table, row_idx)
+        self.table.setSortingEnabled(True)
+        self.table.blockSignals(False)
         self._apply_filter()
 
     def _base_is_mine(self, b: Base) -> bool:
@@ -309,34 +344,31 @@ class BasesPage(QWidget):
 
     def _apply_filter(self) -> None:
         q = self.filter.text().strip().lower()
-        filtered = self._rows
-        if q:
-            filtered = [
-                r
-                for r in self._rows
-                if (r[0].name or "").lower().find(q) >= 0
-                or ((r[1].name if r[1] else "") or "").lower().find(q) >= 0
-            ]
-
-        # Block selection signals while repopulating: otherwise row 0 can stay
-        # "selected" through the rebuild without itemSelectionChanged firing,
-        # leaving the detail pane showing a stale base.
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(filtered))
-        for row_idx, (b, ss, cb) in enumerate(filtered):
-            self.table.setItem(row_idx, 0, _num_cell(int(b.id)))
-            self.table.setItem(row_idx, 1, _cell(b.name or f"Base {b.id}"))
-            self.table.setItem(row_idx, 2, _cell(ss.name if ss else "—"))
-            self.table.setItem(row_idx, 3, _cell(cb.name if cb and cb.name else "—"))
-            self.table.setItem(row_idx, 4, _num_cell(b.docks))
-            self.table.setItem(row_idx, 5, _num_cell(b.hiports))
-            if self._base_is_mine(b):
-                _highlight_row(self.table, row_idx)
-        self.table.setSortingEnabled(True)
+        first_visible: int | None = None
+        for row_idx, (b, ss, _cb) in enumerate(self._rows):
+            if q:
+                name = (b.name or "").lower()
+                sys_name = ((ss.name if ss else "") or "").lower()
+                hidden = q not in name and q not in sys_name
+            else:
+                hidden = False
+            self.table.setRowHidden(row_idx, hidden)
+            if not hidden and first_visible is None:
+                first_visible = row_idx
 
-        if filtered:
-            self.table.selectRow(0)
+        keep_row: int | None = None
+        if self._detail_base_id is not None:
+            for row_idx, (b, _ss, _cb) in enumerate(self._rows):
+                if int(b.id) == int(self._detail_base_id) and not self.table.isRowHidden(row_idx):
+                    keep_row = row_idx
+                    break
+        if keep_row is not None:
+            self.table.selectRow(keep_row)
+        elif first_visible is not None:
+            self.table.selectRow(first_visible)
+        self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         self._show_detail()
 
@@ -345,6 +377,8 @@ class BasesPage(QWidget):
         if not rows:
             return None
         row = min(rows)
+        if self.table.isRowHidden(row):
+            return None
         base_id_item = self.table.item(row, 0)
         if base_id_item is None:
             return None
@@ -358,7 +392,13 @@ class BasesPage(QWidget):
         return None
 
     def _show_detail(self) -> None:
-        self._set_detail(self._selected_row())
+        row = self._selected_row()
+        base_id = int(row[0].id) if row else None
+        if base_id == self._detail_base_id:
+            return
+        self._detail_base_id = base_id
+        self._comp_loaded_base_id = None
+        self._set_detail(row)
 
     def _set_detail(self, row: tuple[Base, StarSystem | None, CelestialBody | None] | None) -> None:
         if row is None:
@@ -398,9 +438,10 @@ class BasesPage(QWidget):
                 self.base_role.setText(f"{role} · hub_id={hub_txt}")
         self._load_turn_data(bid)
         self._load_trade_raw_tables(bid)
-        self._load_competitive_table(bid)
         self._load_resource_mass_outposts_tables(bid)
         self._refresh_shipping_controls(bid)
+        if self.tabs.tabText(self.tabs.currentIndex()) == "Competitive buys":
+            self._load_competitive_if_needed()
 
     def _clear_report_tables(self) -> None:
         self.trade_table.setRowCount(0)
@@ -443,9 +484,12 @@ class BasesPage(QWidget):
                 f"item groups={result.item_groups} ({result.item_group_rows} rows).",
             )
             bid = int(b.id)
+            self._comp_loaded_base_id = None
             self._load_turn_data(bid)
             self._load_trade_raw_tables(bid)
             self._load_resource_mass_outposts_tables(bid)
+            if self.tabs.tabText(self.tabs.currentIndex()) == "Competitive buys":
+                self._load_competitive_if_needed()
         except Exception as e:
             QMessageBox.critical(self, "Turn import failed", str(e))
 
