@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -24,7 +26,21 @@ from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.db.models import Base, Item, ItemType, MarketBuy, MarketSell
 from phoenixtools_app.services.import_items import fetch_single_item, run_items_fetch_missing
 from phoenixtools_app.services.item_detail import ItemDetail, compute_item_detail
+from phoenixtools_app.services.item_opportunities import (
+    filter_profitable_no_route,
+    item_ids_with_trade_routes,
+    list_known_races,
+    list_periphery_choices,
+    middleman_orders_text_for_items,
+    sellable_item_ids_for_periphery,
+    sellable_item_ids_for_race,
+)
 from phoenixtools_app.ui.background import run_job
+
+_VIEW_ALL = "all"
+_VIEW_PROFITABLE = "profitable_no_route"
+_VIEW_PERIPHERY = "periphery"
+_VIEW_RACE = "race"
 
 
 @dataclass(frozen=True)
@@ -47,9 +63,12 @@ class ItemsPage(QWidget):
         super().__init__()
         self._engine = make_engine()
         self._rows: list[ItemRow] = []
+        self._all_rows: list[ItemRow] = []
+        self._routed_item_ids: set[int] = set()
         self._base_name: dict[int, str] = {}
         self._current_detail: ItemDetail | None = None
         self._job = None
+        self._middleman_text = ""
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -59,10 +78,33 @@ class ItemsPage(QWidget):
 
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter by item name / ID …")
+
+        self.view_mode = QComboBox()
+        self.view_mode.addItem("All items", _VIEW_ALL)
+        self.view_mode.addItem("Profitable but no trade route", _VIEW_PROFITABLE)
+        self.view_mode.addItem("Periphery goods", _VIEW_PERIPHERY)
+        self.view_mode.addItem("Race preferred goods", _VIEW_RACE)
+
+        self.periphery_combo = QComboBox()
+        self.periphery_combo.addItem("(Select periphery)", None)
+
+        self.race_combo = QComboBox()
+        self.race_combo.addItem("(Select race)", None)
+
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+
         self.show_all = QCheckBox("Show all items (incl. unknown / not on any market)")
         self.refresh_btn = QPushButton("Refresh")
         self.fetch_one_btn = QPushButton("Fetch attributes for selection")
         self.fetch_missing_btn = QPushButton("Fetch all missing attributes")
+        self.copy_middleman_btn = QPushButton("Copy middleman orders")
+        self.middleman_orders = QTextEdit()
+        self.middleman_orders.setReadOnly(True)
+        self.middleman_orders.setMaximumHeight(100)
+        self.middleman_orders.setPlaceholderText("Middleman orders for periphery / race lists appear here.")
+        self.middleman_orders.setVisible(False)
+        self.copy_middleman_btn.setVisible(False)
 
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
@@ -76,12 +118,20 @@ class ItemsPage(QWidget):
 
         left_layout.addWidget(QLabel("<b>Items</b>"))
         left_layout.addWidget(self.filter)
+        left_layout.addWidget(self.view_mode)
+        left_layout.addWidget(self.periphery_combo)
+        left_layout.addWidget(self.race_combo)
+        left_layout.addWidget(self.summary)
         left_layout.addWidget(self.show_all)
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.refresh_btn)
         btn_row.addWidget(self.fetch_one_btn)
         btn_row.addWidget(self.fetch_missing_btn)
         left_layout.addLayout(btn_row)
+        mid_row = QHBoxLayout()
+        mid_row.addWidget(self.copy_middleman_btn)
+        left_layout.addLayout(mid_row)
+        left_layout.addWidget(self.middleman_orders)
         left_layout.addWidget(self.table, 1)
 
         root.addWidget(left, 3)
@@ -90,11 +140,92 @@ class ItemsPage(QWidget):
         self.refresh_btn.clicked.connect(self._refresh)
         self.filter.textChanged.connect(self._apply_filter)
         self.show_all.toggled.connect(self._apply_filter)
+        self.view_mode.currentIndexChanged.connect(self._on_view_mode_changed)
+        self.periphery_combo.currentIndexChanged.connect(self._on_opportunity_param_changed)
+        self.race_combo.currentIndexChanged.connect(self._on_opportunity_param_changed)
+        self.copy_middleman_btn.clicked.connect(self._copy_middleman_orders)
         self.fetch_one_btn.clicked.connect(self._fetch_selected)
         self.fetch_missing_btn.clicked.connect(self._fetch_missing)
         self.table.itemSelectionChanged.connect(self._show_detail)
 
+        self._on_view_mode_changed()
         self._refresh()
+
+    def _current_view(self) -> str:
+        mode = self.view_mode.currentData()
+        return mode if isinstance(mode, str) else _VIEW_ALL
+
+    def _on_view_mode_changed(self) -> None:
+        view = self._current_view()
+        self.periphery_combo.setVisible(view == _VIEW_PERIPHERY)
+        self.race_combo.setVisible(view == _VIEW_RACE)
+        show_mm = view in (_VIEW_PERIPHERY, _VIEW_RACE)
+        self.middleman_orders.setVisible(show_mm)
+        self.copy_middleman_btn.setVisible(show_mm)
+        self.show_all.setEnabled(view == _VIEW_ALL)
+        self._apply_view_rows()
+
+    def _on_opportunity_param_changed(self) -> None:
+        if self._current_view() in (_VIEW_PERIPHERY, _VIEW_RACE):
+            self._apply_view_rows()
+
+    def _apply_view_rows(self) -> None:
+        view = self._current_view()
+        self._middleman_text = ""
+        self.middleman_orders.clear()
+
+        if view == _VIEW_ALL:
+            self._rows = list(self._all_rows)
+            self.summary.setText(f"{len(self._all_rows)} items loaded from database.")
+        elif view == _VIEW_PROFITABLE:
+            self._rows = filter_profitable_no_route(
+                self._all_rows, routed_item_ids=self._routed_item_ids
+            )
+            self.summary.setText(
+                f"{len(self._rows)} items with market profit but no generated trade route "
+                f"({len(self._routed_item_ids)} items have routes)."
+            )
+        elif view == _VIEW_PERIPHERY:
+            periphery = self.periphery_combo.currentData()
+            if periphery is None:
+                self._rows = []
+                self.summary.setText("Select a periphery to list sellable trade goods from that periphery.")
+            else:
+                with make_session(self._engine) as session:
+                    ids = sellable_item_ids_for_periphery(session, periphery)
+                    self._rows = [r for r in self._all_rows if r.item_id in ids]
+                    name = self.periphery_combo.currentText()
+                    self._middleman_text = middleman_orders_text_for_items(
+                        session, [r.item_id for r in self._rows]
+                    )
+                self.summary.setText(f"{len(self._rows)} sellable goods from {name}.")
+                self.middleman_orders.setPlainText(self._middleman_text)
+        elif view == _VIEW_RACE:
+            race = self.race_combo.currentData()
+            if not race:
+                self._rows = []
+                self.summary.setText("Select a race to list preferred sellable trade goods.")
+            else:
+                with make_session(self._engine) as session:
+                    ids = sellable_item_ids_for_race(session, str(race))
+                    self._rows = [r for r in self._all_rows if r.item_id in ids]
+                    self._middleman_text = middleman_orders_text_for_items(
+                        session, [r.item_id for r in self._rows]
+                    )
+                self.summary.setText(f'{len(self._rows)} sellable goods for race "{race}".')
+                self.middleman_orders.setPlainText(self._middleman_text)
+        else:
+            self._rows = list(self._all_rows)
+            self.summary.setText("")
+
+        self._apply_filter()
+
+    def _copy_middleman_orders(self) -> None:
+        if not self._middleman_text:
+            QMessageBox.information(self, "Nothing to copy", "No middleman orders for this list.")
+            return
+        QApplication.clipboard().setText(self._middleman_text)
+        QMessageBox.information(self, "Copied", "Middleman orders copied to clipboard.")
 
     def _build_detail_pane(self) -> QWidget:
         right = QWidget()
@@ -190,13 +321,41 @@ class ItemsPage(QWidget):
     def _refresh(self) -> None:
         with make_session(self._engine) as session:
             self._base_name = _base_names(session)
-            self._rows = _load_item_rows(session)
-        self._apply_filter()
+            self._all_rows = _load_item_rows(session)
+            self._routed_item_ids = item_ids_with_trade_routes(session)
+            peripheries = list_periphery_choices(session)
+            races = list_known_races(session)
+
+        self.periphery_combo.blockSignals(True)
+        cur_per = self.periphery_combo.currentData()
+        self.periphery_combo.clear()
+        self.periphery_combo.addItem("(Select periphery)", None)
+        for pid, name in peripheries:
+            self.periphery_combo.addItem(name, pid)
+        if cur_per is not None:
+            ix = self.periphery_combo.findData(cur_per)
+            if ix >= 0:
+                self.periphery_combo.setCurrentIndex(ix)
+        self.periphery_combo.blockSignals(False)
+
+        self.race_combo.blockSignals(True)
+        cur_race = self.race_combo.currentData()
+        self.race_combo.clear()
+        self.race_combo.addItem("(Select race)", None)
+        for race in races:
+            self.race_combo.addItem(race, race)
+        if cur_race:
+            ix = self.race_combo.findData(cur_race)
+            if ix >= 0:
+                self.race_combo.setCurrentIndex(ix)
+        self.race_combo.blockSignals(False)
+
+        self._apply_view_rows()
 
     def _apply_filter(self) -> None:
         q = self.filter.text().strip().lower()
         rows = self._rows
-        if not self.show_all.isChecked():
+        if self._current_view() == _VIEW_ALL and not self.show_all.isChecked():
             rows = [r for r in rows if r.attributes_fetched or r.best_sell or r.best_buy]
         if q:
             rows = [
