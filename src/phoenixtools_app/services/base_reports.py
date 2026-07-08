@@ -266,3 +266,27 @@ def competitive_buy_orders_text(
     lines = [f"; Competitive market buy orders for base {base_id} ({len(orders)} orders)", ""]
     lines.extend(str(o) for o in orders)
     return "\n".join(lines)
+
+
+def set_item_group_orders(group_name: str, items: dict[int, int]) -> list[PhoenixOrder]:
+    """Rails Base#set_item_group_orders — create group + set quantities."""
+    name = group_name.strip()
+    if not name:
+        return []
+    picked = {int(iid): int(qty) for iid, qty in items.items() if qty is not None and int(qty) >= 1}
+    if not picked:
+        return []
+    orders: list[PhoenixOrder] = [PhoenixOrder.create_item_group(name)]
+    for item_id in sorted(picked):
+        orders.append(PhoenixOrder.set_item_group(name, item_id, picked[item_id]))
+    return orders
+
+
+def set_item_group_orders_text(group_name: str, items: dict[int, int]) -> str:
+    orders = set_item_group_orders(group_name, items)
+    if not orders:
+        return "; Enter a group name and at least one Set qty (from inventory / trade / raw / personnel)."
+    item_count = len(orders) - 1
+    lines = [f'; Set item group "{group_name.strip()}" ({item_count} items)', ""]
+    lines.extend(str(o) for o in orders)
+    return "\n".join(lines)

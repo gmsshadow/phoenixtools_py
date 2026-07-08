@@ -38,11 +38,14 @@ from phoenixtools_app.services.base_reports import (
     middleman_candidate_items,
     middleman_orders_text,
     raw_materials_for_base,
+    set_item_group_orders_text,
     trade_items_for_base,
 )
 from phoenixtools_app.services.import_turn import run_turn_import
 from phoenixtools_app.services.shipping_jobs import group_summaries_for_base, squadron_move_group_orders
 from phoenixtools_app.ui.background import run_job
+
+_SET_GROUP_CATEGORIES = ("Inventory", "Personnel", "Raw Materials", "Trade Items")
 
 
 class BasesPage(QWidget):
@@ -140,8 +143,47 @@ class BasesPage(QWidget):
         overview_layout.addWidget(detail)
         overview_layout.addWidget(QLabel("<b>Inventory report</b> <small>(category: Inventory)</small>"))
         overview_layout.addWidget(self.inventory, 1)
-        overview_layout.addWidget(QLabel("<b>Item groups</b>"))
+        overview_layout.addWidget(QLabel("<b>Item groups</b> <small>(from last imported turn)</small>"))
         overview_layout.addWidget(self.groups, 1)
+
+        set_group = QWidget()
+        set_group_layout = QVBoxLayout(set_group)
+        set_group_layout.setContentsMargins(0, 0, 0, 0)
+        set_group_layout.addWidget(
+            QLabel(
+                "<b>Set / update item group</b> — enter quantities to assign items into a group "
+                "(Rails <i>set_item_group</i>; paste orders into Phoenix)."
+            )
+        )
+        set_group_form = QFormLayout()
+        set_group_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.set_group_name = QLineEdit()
+        self.set_group_name.setPlaceholderText("Group name (new or existing)")
+        set_group_form.addRow("Group name", self.set_group_name)
+        set_group_layout.addLayout(set_group_form)
+        set_group_btn_row = QHBoxLayout()
+        self.set_group_load_btn = QPushButton("Load selected group")
+        self.set_group_clear_btn = QPushButton("Clear quantities")
+        self.set_group_gen_btn = QPushButton("Generate set-group orders")
+        self.set_group_copy_btn = QPushButton("Copy orders")
+        set_group_btn_row.addWidget(self.set_group_load_btn)
+        set_group_btn_row.addWidget(self.set_group_clear_btn)
+        set_group_btn_row.addWidget(self.set_group_gen_btn)
+        set_group_btn_row.addWidget(self.set_group_copy_btn)
+        set_group_layout.addLayout(set_group_btn_row)
+        self.set_group_table = QTableWidget(0, 5)
+        self.set_group_table.setHorizontalHeaderLabels(["Category", "On hand", "Set qty", "Item", "Item ID"])
+        self.set_group_table.setAlternatingRowColors(True)
+        self.set_group_table.setMaximumHeight(220)
+        self.set_group_orders = QTextEdit()
+        self.set_group_orders.setReadOnly(True)
+        self.set_group_orders.setMaximumHeight(72)
+        self.set_group_orders.setPlaceholderText("Order=… lines appear here.")
+        self._set_group_full_text = ""
+        set_group_layout.addWidget(self.set_group_table)
+        set_group_layout.addWidget(self.set_group_orders)
+        overview_layout.addWidget(set_group)
+
         overview_layout.addWidget(QLabel("<b>Item group shipping</b>"))
         overview_layout.addWidget(shipping)
 
@@ -282,6 +324,10 @@ class BasesPage(QWidget):
         self.fetch_turn_btn.clicked.connect(self._fetch_turn)
         self.ship_generate_btn.clicked.connect(self._generate_shipping_orders)
         self.ship_copy_btn.clicked.connect(self._copy_shipping_orders)
+        self.set_group_load_btn.clicked.connect(self._load_set_group_from_selection)
+        self.set_group_clear_btn.clicked.connect(self._clear_set_group_quantities)
+        self.set_group_gen_btn.clicked.connect(self._generate_set_group_orders)
+        self.set_group_copy_btn.clicked.connect(self._copy_set_group_orders)
         self.comp_copy_btn.clicked.connect(self._copy_competitive_orders)
         self.mid_gen_btn.clicked.connect(self._generate_middleman)
         self.mid_copy_btn.clicked.connect(self._copy_middleman)
@@ -518,6 +564,7 @@ class BasesPage(QWidget):
                     hub_txt = f"{hb.name if hb else ''} ({bb.hub_id})" if hb or bb.hub_id else str(bb.hub_id)
                 self.base_role.setText(f"{role} · hub_id={hub_txt}")
         self._load_turn_data(bid)
+        self._load_set_group_table(bid)
         self._load_trade_raw_tables(bid)
         self._load_resource_mass_outposts_tables(bid)
         self._refresh_shipping_controls(bid)
@@ -529,6 +576,10 @@ class BasesPage(QWidget):
         self.raw_table.setRowCount(0)
         self.comp_table.setRowCount(0)
         self._comp_text = ""
+        self.set_group_table.setRowCount(0)
+        self.set_group_name.clear()
+        self.set_group_orders.clear()
+        self._set_group_full_text = ""
         self.resource_table.setRowCount(0)
         self.mass_table.setRowCount(0)
         self._clear_outpost_widgets()
@@ -567,6 +618,7 @@ class BasesPage(QWidget):
             bid = int(b.id)
             self._comp_loaded_base_id = None
             self._load_turn_data(bid)
+            self._load_set_group_table(bid)
             self._load_trade_raw_tables(bid)
             self._load_resource_mass_outposts_tables(bid)
             if self.tabs.tabText(self.tabs.currentIndex()) == "Competitive buys":
@@ -603,6 +655,116 @@ class BasesPage(QWidget):
             self.groups.setItem(r, 1, _cell(ig.name))
             self.groups.setItem(r, 2, _cell(item.name))
             self.groups.setItem(r, 3, _cell(str(ig.quantity), align=Qt.AlignmentFlag.AlignRight))
+
+    def _load_set_group_table(self, base_id: int) -> None:
+        with make_session(self._engine) as session:
+            rows = session.exec(
+                select(BaseItem, Item)
+                .where(BaseItem.base_id == int(base_id))
+                .where(BaseItem.category.in_(_SET_GROUP_CATEGORIES))
+                .where(BaseItem.item_id == Item.id)
+                .order_by(BaseItem.category, Item.name)
+            ).all()
+
+        self.set_group_table.setRowCount(len(rows))
+        for r, (bi, item) in enumerate(rows):
+            self.set_group_table.setItem(r, 0, _cell(bi.category))
+            self.set_group_table.setItem(
+                r, 1, _cell(str(bi.quantity), align=Qt.AlignmentFlag.AlignRight)
+            )
+            self.set_group_table.setItem(r, 2, _editable_qty_cell(""))
+            self.set_group_table.setItem(r, 3, _cell(item.name))
+            self.set_group_table.setItem(
+                r, 4, _cell(str(item.id), align=Qt.AlignmentFlag.AlignRight)
+            )
+        self.set_group_name.clear()
+        self.set_group_orders.clear()
+        self._set_group_full_text = ""
+
+    def _clear_set_group_quantities(self) -> None:
+        for r in range(self.set_group_table.rowCount()):
+            self.set_group_table.setItem(r, 2, _editable_qty_cell(""))
+
+    def _load_set_group_from_selection(self) -> None:
+        row = self.groups.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "No selection", "Select a row in the item groups table first.")
+            return
+        gid_item = self.groups.item(row, 0)
+        name_item = self.groups.item(row, 1)
+        if gid_item is None or name_item is None:
+            return
+        try:
+            group_id = int(gid_item.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid group", "Could not read group ID from selection.")
+            return
+        group_name = name_item.text().strip()
+        self.set_group_name.setText(group_name)
+
+        detail_row = self._selected_row()
+        if detail_row is None:
+            return
+        base_id = int(detail_row[0].id)
+        with make_session(self._engine) as session:
+            group_rows = session.exec(
+                select(ItemGroup)
+                .where(ItemGroup.base_id == base_id)
+                .where(ItemGroup.group_id == group_id)
+            ).all()
+        qty_by_item = {int(ig.item_id): int(ig.quantity) for ig in group_rows}
+
+        self._clear_set_group_quantities()
+        for r in range(self.set_group_table.rowCount()):
+            id_item = self.set_group_table.item(r, 4)
+            if id_item is None:
+                continue
+            try:
+                item_id = int(id_item.text())
+            except ValueError:
+                continue
+            if item_id in qty_by_item:
+                self.set_group_table.setItem(
+                    r,
+                    2,
+                    _editable_qty_cell(str(qty_by_item[item_id]), align=Qt.AlignmentFlag.AlignRight),
+                )
+
+    def _collect_set_group_items(self) -> dict[int, int]:
+        picked: dict[int, int] = {}
+        for r in range(self.set_group_table.rowCount()):
+            qty_item = self.set_group_table.item(r, 2)
+            id_item = self.set_group_table.item(r, 4)
+            if qty_item is None or id_item is None:
+                continue
+            raw = qty_item.text().strip()
+            if not raw:
+                continue
+            try:
+                qty = int(raw)
+                item_id = int(id_item.text())
+            except ValueError:
+                continue
+            if qty >= 1:
+                picked[item_id] = qty
+        return picked
+
+    def _generate_set_group_orders(self) -> None:
+        name = self.set_group_name.text().strip()
+        if not name:
+            QMessageBox.information(self, "Group name required", "Enter a name for the item group.")
+            return
+        items = self._collect_set_group_items()
+        text = set_item_group_orders_text(name, items)
+        self._set_group_full_text = text
+        self.set_group_orders.setPlainText(text)
+
+    def _copy_set_group_orders(self) -> None:
+        if not self._set_group_full_text:
+            QMessageBox.information(self, "Nothing to copy", "Generate set-group orders first.")
+            return
+        QApplication.clipboard().setText(self._set_group_full_text)
+        QMessageBox.information(self, "Copied", "Set-group orders copied to clipboard.")
 
     def _load_trade_raw_tables(self, base_id: int) -> None:
         with make_session(self._engine) as session:
@@ -839,6 +1001,13 @@ def _cell(text: str, *, align: Qt.AlignmentFlag | None = None, bg: QBrush | None
     if bg is not None:
         item.setBackground(bg)
     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+def _editable_qty_cell(text: str, *, align: Qt.AlignmentFlag | None = None) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    if align is not None:
+        item.setTextAlignment(int(align))
     return item
 
 
