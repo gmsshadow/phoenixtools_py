@@ -417,10 +417,12 @@ class BasesPage(QWidget):
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         first_visible: int | None = None
-        for row_idx, (b, ss, _cb) in enumerate(self._rows):
+        for row_idx in range(self.table.rowCount()):
+            name_item = self.table.item(row_idx, 1)
+            sys_item = self.table.item(row_idx, 2)
+            name = (name_item.text() if name_item else "").lower()
+            sys_name = (sys_item.text() if sys_item else "").lower()
             if q:
-                name = (b.name or "").lower()
-                sys_name = ((ss.name if ss else "") or "").lower()
                 hidden = q not in name and q not in sys_name
             else:
                 hidden = False
@@ -430,8 +432,17 @@ class BasesPage(QWidget):
 
         keep_row: int | None = None
         if self._detail_base_id is not None:
-            for row_idx, (b, _ss, _cb) in enumerate(self._rows):
-                if int(b.id) == int(self._detail_base_id) and not self.table.isRowHidden(row_idx):
+            for row_idx in range(self.table.rowCount()):
+                if self.table.isRowHidden(row_idx):
+                    continue
+                id_item = self.table.item(row_idx, 0)
+                if id_item is None:
+                    continue
+                try:
+                    base_id = int(id_item.text())
+                except ValueError:
+                    continue
+                if base_id == int(self._detail_base_id):
                     keep_row = row_idx
                     break
         if keep_row is not None:
