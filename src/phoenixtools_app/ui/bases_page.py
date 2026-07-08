@@ -22,6 +22,7 @@ from sqlmodel import Session, select
 
 from phoenixtools_app.db.engine import make_engine, make_session
 from phoenixtools_app.db.models import (
+    Affiliation,
     Base,
     BaseItem,
     BaseResource,
@@ -54,6 +55,7 @@ class BasesPage(QWidget):
         self._engine = make_engine()
         self._rows: list[tuple[Base, StarSystem | None, CelestialBody | None]] = []
         self._my_affiliation_id: int | None = None
+        self._my_affiliation_name: str = "My"
         self._detail_base_id: int | None = None
         self._comp_loaded_base_id: int | None = None
         self._comp_load_token = 0
@@ -71,6 +73,17 @@ class BasesPage(QWidget):
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter by base name / system …")
 
+        self.scope_combo = QComboBox()
+        self.scope_combo.addItem("My starbases", ("mine", False))
+        self.scope_combo.addItem("All starbases", ("all", False))
+        self.scope_combo.addItem("My starbases and outposts", ("mine", True))
+        self.scope_combo.addItem("All starbases and outposts", ("all", True))
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Sort by ID", "id")
+        self.sort_combo.addItem("Sort by name", "name")
+        self.sort_combo.addItem("Sort by location", "location")
+
         self.refresh_btn = QPushButton("Refresh")
 
         self.table = QTableWidget(0, 6)
@@ -83,6 +96,8 @@ class BasesPage(QWidget):
 
         left_layout.addWidget(QLabel("<b>Bases</b>"))
         left_layout.addWidget(self.filter)
+        left_layout.addWidget(self.scope_combo)
+        left_layout.addWidget(self.sort_combo)
         left_layout.addWidget(self.refresh_btn)
         left_layout.addWidget(self.table, 1)
 
@@ -319,6 +334,8 @@ class BasesPage(QWidget):
         self.refresh_btn.clicked.connect(self._refresh)
         self.filter.textChanged.connect(lambda: self._filter_timer.start())
         self._filter_timer.timeout.connect(self._apply_filter)
+        self.scope_combo.currentIndexChanged.connect(self._rebuild_table)
+        self.sort_combo.currentIndexChanged.connect(self._rebuild_table)
         self.table.itemSelectionChanged.connect(self._show_detail)
         self.copy_id_btn.clicked.connect(self._copy_id)
         self.fetch_turn_btn.clicked.connect(self._fetch_turn)
@@ -428,12 +445,68 @@ class BasesPage(QWidget):
             self._my_affiliation_id = (
                 int(cfg.affiliation_id) if cfg and cfg.affiliation_id is not None else None
             )
+            if self._my_affiliation_id is not None:
+                aff = session.get(Affiliation, int(self._my_affiliation_id))
+                self._my_affiliation_name = aff.name if aff and aff.name else f"Affiliation {self._my_affiliation_id}"
+            else:
+                self._my_affiliation_name = "My"
+        self._update_scope_labels()
         self._detail_base_id = None
         self._comp_loaded_base_id = None
+        self._rebuild_table()
+
+    def _update_scope_labels(self) -> None:
+        name = self._my_affiliation_name
+        self.scope_combo.blockSignals(True)
+        self.scope_combo.setItemText(0, f"{name} starbases")
+        self.scope_combo.setItemText(2, f"{name} starbases and outposts")
+        self.scope_combo.blockSignals(False)
+
+    def _scope_settings(self) -> tuple[bool, bool]:
+        """Return (all_affiliations, show_outposts) for the current scope selection."""
+        data = self.scope_combo.currentData()
+        if not isinstance(data, tuple) or len(data) != 2:
+            return False, False
+        scope, show_outposts = data
+        return scope == "all", bool(show_outposts)
+
+    def _passes_scope_filter(self, b: Base, *, all_affiliations: bool, show_outposts: bool) -> bool:
+        if not show_outposts and not bool(b.starbase):
+            return False
+        if all_affiliations:
+            return True
+        return self._base_is_mine(b)
+
+    def _sorted_scope_rows(
+        self,
+    ) -> list[tuple[Base, StarSystem | None, CelestialBody | None]]:
+        all_aff, show_outposts = self._scope_settings()
+        rows = [
+            row
+            for row in self._rows
+            if self._passes_scope_filter(row[0], all_affiliations=all_aff, show_outposts=show_outposts)
+        ]
+        sort_key = self.sort_combo.currentData()
+        if sort_key == "name":
+            rows.sort(key=lambda r: ((r[0].name or f"Base {r[0].id}").lower(), int(r[0].id)))
+        elif sort_key == "location":
+            rows.sort(
+                key=lambda r: (
+                    ((r[1].name if r[1] else "") or "—").lower(),
+                    (r[0].name or "").lower(),
+                    int(r[0].id),
+                )
+            )
+        else:
+            rows.sort(key=lambda r: int(r[0].id))
+        return rows
+
+    def _rebuild_table(self) -> None:
+        display_rows = self._sorted_scope_rows()
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(self._rows))
-        for row_idx, (b, ss, cb) in enumerate(self._rows):
+        self.table.setRowCount(len(display_rows))
+        for row_idx, (b, ss, cb) in enumerate(display_rows):
             self.table.setItem(row_idx, 0, _num_cell(int(b.id)))
             self.table.setItem(row_idx, 1, _cell(b.name or f"Base {b.id}"))
             self.table.setItem(row_idx, 2, _cell(ss.name if ss else "—"))
